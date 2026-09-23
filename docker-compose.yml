@@ -1,0 +1,21 @@
+services:
+  takeyourcoat:
+    # Pin to a version tag or digest, never latest.
+    image: ghcr.io/nmbradley/takeyourcoat:v0.1.0
+    # Or build from source on the VPS instead of pulling:
+    # build: .
+    network_mode: host
+    cap_drop: [ALL]
+    cap_add: [NET_ADMIN]
+    read_only: true
+    security_opt: [no-new-privileges:true]
+    restart: unless-stopped
+    environment:
+      TYC_PUBLIC_URL: https://hello.example.com
+      TYC_TRUSTED_EMAILS: alice@example.com,bob@example.com
+      TYC_IPSET_NAME: jellyfin_clients
+      TYC_WHITELIST_TTL: 72h
+      TYC_SMTP_HOST: smtp.fastmail.com
+      TYC_SMTP_USERNAME: you@example.com
+      TYC_SMTP_PASSWORD: ${TYC_SMTP_PASSWORD}
+      TYC_SMTP_FROM: Jellyfin Access <you@example.com>

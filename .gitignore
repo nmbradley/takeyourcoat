@@ -1,0 +1,21 @@
+# Deployment secrets and local config
+.env
+config.json
+*.local.yml
+
+# Binary
+/takeyourcoat
+
+# Go
+*.exe
+*.test
+*.out
+coverage.*
+go.work
+go.work.sum
+vendor/
+
+# Editors / OS
+.DS_Store
+.idea/
+.vscode/

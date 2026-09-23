@@ -1,0 +1,7 @@
+.git
+.github
+README.md
+PLAN.md
+.env*
+docker-compose*.yml
+*_test.go
