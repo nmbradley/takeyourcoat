@@ -10,10 +10,6 @@ placeholder names with your own throughout.
 The app never creates the set or the firewall rule. It only runs `ipset add`.
 Everything on this page is done once, by you, on the host.
 
-For a single end-to-end walkthrough on Ubuntu, including notes for Oracle
-Cloud, see [INSTALL.md](../../INSTALL.md). This page explains each step and
-the pitfalls in more detail.
-
 ## 1. Install Docker
 
 Docker's own apt repository (works for both Debian and Ubuntu):
