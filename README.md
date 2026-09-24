@@ -152,6 +152,13 @@ and embedded in the binary. SHA-256:
 never fetched at build or run time; upgrading is a manual copy plus updating
 this note.
 
+## Documentation
+
+- [Operator guide](docs/user/README.md): VPS setup, Caddy and WireGuard,
+  configuration, deployment, troubleshooting, security model.
+- [Developer guide](docs/dev/README.md): architecture, security design,
+  testing, packaging and CI, design decisions.
+
 ## License
 
 MIT
