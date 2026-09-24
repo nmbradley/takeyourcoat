@@ -7,8 +7,9 @@ address, SSH access as a user with `sudo`, and DNS A records for
 `hello.example.com` and `jellyfin.example.com` pointing at the VPS. Replace the
 placeholder names with your own throughout.
 
-The app never creates the set or the firewall rule. It only runs `ipset add`.
-Everything on this page is done once, by you, on the host.
+The host needs very little: Docker and three open ports. Caddy and the app
+both run in the compose project. There is no ipset set, no iptables rule and
+nothing to persist across reboots.
 
 ## 1. Install Docker
 
@@ -31,130 +32,52 @@ Check:
 sudo docker compose version
 ```
 
-## 2. Install ipset, iptables and the persistence packages
+## 2. Open the ports
 
-```sh
-sudo apt-get install -y ipset iptables netfilter-persistent iptables-persistent ipset-persistent
-```
+| Port | Why |
+|------|-----|
+| TCP 80 | Caddy: ACME certificate challenges and the HTTP to HTTPS redirect |
+| TCP 443 | Caddy: both hostnames |
+| UDP 443 | Caddy: HTTP/3 |
+| UDP 51820 | WireGuard, see [Caddy and WireGuard](caddy-and-wireguard.md) |
 
-`iptables-persistent` may ask whether to save the current rules. Either answer
-is fine; you save again at the end of this page.
+Open them in your VPS provider's **cloud firewall** (security list, security
+group) and in any **host firewall** such as ufw. Nothing else needs to be
+reachable. The app itself publishes no port.
 
-## 3. Install Caddy on the host
+Nothing else may listen on 80 or 443. If you ran Caddy on the host for v0.1,
+stop it (`sudo systemctl disable --now caddy`) before starting the compose
+project.
 
-Install Caddy as a host package, not in Docker (see pitfall 1 below).
+## 3. Two ways it can go wrong
 
-```sh
-sudo apt-get install -y debian-keyring debian-archive-keyring apt-transport-https curl gnupg
-curl -1sLf 'https://dl.cloudsmith.io/public/caddy/stable/gpg.key' | sudo gpg --dearmor -o /usr/share/keyrings/caddy-stable-archive-keyring.gpg
-curl -1sLf 'https://dl.cloudsmith.io/public/caddy/stable/debian.deb.txt' | sudo tee /etc/apt/sources.list.d/caddy-stable.list
-sudo apt-get update
-sudo apt-get install -y caddy
-```
+Check both after deploying.
 
-The Caddyfile itself is on [Caddy and WireGuard](caddy-and-wireguard.md).
-
-## 4. Create the set
-
-```sh
-sudo ipset create jellyfin_clients hash:ip family inet timeout 259200
-```
-
-- `hash:ip family inet`: single IPv4 addresses. The app only ever adds public
-  IPv4 addresses.
-- `timeout 259200`: the set supports per-entry timeouts (default 72 hours). The
-  app passes its own `timeout` on every add (from `TYC_WHITELIST_TTL`), so the
-  set **must** be created with a `timeout` option or every add fails.
-- The name must match `TYC_IPSET_NAME` (default `jellyfin_clients`).
-
-## 5. Add the firewall rule
-
-Drop traffic to the Jellyfin port from anything not in the set:
-
-```sh
-sudo iptables -I INPUT 1 -p tcp --dport 8920 -m set ! --match-set jellyfin_clients src -j DROP
-```
-
-This inserts at position 1 rather than appending (`-A`), which avoids pitfall 2.
-The portal on 443 is not matched and stays open to everyone.
-
-Block the Jellyfin port over IPv6 entirely (pitfall 3):
-
-```sh
-sudo ip6tables -I INPUT 1 -p tcp --dport 8920 -j DROP
-```
-
-If your VPS provider has a cloud firewall, allow inbound TCP 80, 443 and 8920,
-and UDP 51820 for WireGuard. Port 80 is used by Caddy for certificates and
-redirects.
-
-## 6. The four ways the rule silently does nothing
-
-Check each one after deploying.
-
-1. **Caddy in Docker bypasses INPUT.** Traffic to a container's published port
-   goes through the FORWARD and DOCKER chains, never INPUT. Run Caddy on the
-   host (as above) or with `network_mode: host`. If Caddy must run in bridge
-   mode, put the rule in the `DOCKER-USER` chain instead.
-2. **Rule order.** An earlier ACCEPT for port 8920 (from ufw or an old setup)
-   wins over a DROP further down. Confirm nothing accepts 8920 before your rule:
+1. **`forward_auth` misconfigured: Jellyfin reachable without verifying.** If
+   the Jellyfin site in the Caddyfile has no `forward_auth` block, or it
+   points somewhere other than `takeyourcoat:8080` with `uri /check`, Caddy
+   proxies every request straight to Jellyfin. Check the Caddyfile against
+   [Caddy and WireGuard](caddy-and-wireguard.md#caddyfile), then prove it: from
+   a network that has **not** verified (mobile data on a phone hotspot works),
 
    ```sh
-   sudo iptables -L INPUT -n --line-numbers
+   curl -s -o /dev/null -w '%{http_code}\n' https://jellyfin.example.com
    ```
 
-3. **IPv6 AAAA leak.** The set is IPv4 only. If `jellyfin.example.com` has an
-   AAAA record, IPv6 clients connect over IPv6 and never meet the IPv4 rule.
-   Publish no AAAA record for the Jellyfin hostname, and keep the `ip6tables`
-   DROP above as a second line of defence. Check DNS (`dig` is in the
-   `bind9-dnsutils` package):
+   must print `403`. Then go through the portal from that network and run it
+   again; it should now print Jellyfin's own status (`200` or a `302`
+   redirect).
 
-   ```sh
-   dig +short AAAA jellyfin.example.com
-   ```
-
-   The output should be empty.
-
-4. **Prove it with curl.** From a network that has **not** verified (mobile
-   data on a phone hotspot works), this must time out:
-
-   ```sh
-   curl -m 5 https://jellyfin.example.com:8920
-   ```
-
-   Then go through the portal from that network and run it again; it should
-   now connect. You can also see the entry on the VPS:
-
-   ```sh
-   sudo ipset list jellyfin_clients
-   ```
-
-## 7. Persist across reboot
-
-Neither the set nor the rule survives a reboot on its own. With the packages
-from step 2, save both:
-
-```sh
-sudo netfilter-persistent save
-```
-
-This writes `/etc/iptables/ipsets`, `/etc/iptables/rules.v4` and
-`/etc/iptables/rules.v6`. On boot, the `ipset-persistent` plugin restores the
-set **before** the iptables rules are restored. That order matters: an
-iptables rule that references a set that does not exist yet fails to load, and
-the whole `rules.v4` restore fails with it.
-
-Saving also saves the current set entries with their remaining timeouts. That
-is harmless; they keep counting down after boot.
-
-Check after the next reboot:
-
-```sh
-sudo ipset list -n
-sudo iptables -L INPUT -n --line-numbers
-```
-
-Run `sudo netfilter-persistent save` again whenever you change the rule.
+2. **Wrong proxy range: everyone gets the locked page, even after unlocking.**
+   The app only believes `X-Forwarded-For` from addresses in
+   `TYC_TRUSTED_PROXIES`. If that range does not cover the Caddy container's
+   address, the app sees Caddy's own private address as the client, so every
+   request looks like it comes from a private IP and `/check` answers `403`
+   with "This portal only works with public IPv4 addresses". The emailed
+   link page shows the same message, so nobody can unlock. The shipped
+   compose file pins the network to `172.28.0.0/24` and trusts exactly that
+   range. If you changed the subnet, change `TYC_TRUSTED_PROXIES` to match.
+   See [Configuration](configuration.md#trusted-proxies).
 
 ## Next
 

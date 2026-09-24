@@ -1,21 +1,47 @@
 services:
+  caddy:
+    image: caddy:2
+    restart: unless-stopped
+    ports:
+      - "80:80"
+      - "443:443"
+      - "443:443/udp"
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy-data:/data
+      - caddy-config:/config
+    networks: [web]
+
   takeyourcoat:
     # Pin to a version tag or digest, never latest.
-    image: ghcr.io/nmbradley/takeyourcoat:0.1.0
+    image: ghcr.io/nmbradley/takeyourcoat:0.2.0
     # Or build from source on the VPS instead of pulling:
     # build: .
-    network_mode: host
-    cap_drop: [ALL]
-    cap_add: [NET_ADMIN]
-    read_only: true
-    security_opt: [no-new-privileges:true]
     restart: unless-stopped
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    volumes:
+      - tyc-data:/data
+    networks: [web]
     environment:
+      TYC_LISTEN: 0.0.0.0:8080
+      TYC_TRUSTED_PROXIES: 172.28.0.0/24
       TYC_PUBLIC_URL: https://hello.example.com
       TYC_TRUSTED_EMAILS: alice@example.com,bob@example.com
-      TYC_IPSET_NAME: jellyfin_clients
       TYC_WHITELIST_TTL: 72h
-      TYC_SMTP_HOST: smtp.fastmail.com
-      TYC_SMTP_USERNAME: you@example.com
+      TYC_SMTP_HOST: smtp.resend.com
+      TYC_SMTP_USERNAME: resend
       TYC_SMTP_PASSWORD: ${TYC_SMTP_PASSWORD}
-      TYC_SMTP_FROM: Jellyfin Access <you@example.com>
+      TYC_SMTP_FROM: Jellyfin Access <hello@example.com>
+
+networks:
+  web:
+    ipam:
+      config:
+        - subnet: 172.28.0.0/24
+
+volumes:
+  caddy-data:
+  caddy-config:
+  tyc-data:

@@ -4,4 +4,6 @@ README.md
 PLAN.md
 .env*
 docker-compose*.yml
+Caddyfile
+docs/
 *_test.go

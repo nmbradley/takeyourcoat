@@ -23,13 +23,13 @@ type Config struct {
     PublicURL               string     `json:"public_url"`
     TrustedProxies          []string   `json:"trusted_proxies"`
     TrustedEmails           []string   `json:"trusted_emails"`
-    IpsetName               string     `json:"ipset_name"`
+    StateFile               string     `json:"state_file"`
     WhitelistTTL            Duration   `json:"whitelist_ttl"`
     TokenTTL                Duration   `json:"token_ttl"`
     RequestsPerEmailPerHour int        `json:"requests_per_email_per_hour"`
     SMTP                    SMTPConfig `json:"smtp"`
 
-    proxies []netip.Addr // filled by validate
+    proxies []netip.Prefix // filled by validate
 }
 ```
 
@@ -47,11 +47,19 @@ out. Code converts with `time.Duration(cfg.WhitelistTTL)`.
 ## `loadConfig`
 
 ```text
-defaults  ->  JSON file (if TYC_CONFIG != "")  ->  applyEnv  ->  validate
+TYC_IPSET_NAME guard  ->  defaults  ->  JSON file (if TYC_CONFIG != "")  ->  applyEnv  ->  validate
 ```
 
+0. If `os.LookupEnv("TYC_IPSET_NAME")` reports the variable as set, even to
+   an empty string, return at once with
+   `TYC_IPSET_NAME: no longer used; v0.2 gates via Caddy forward_auth, see README`
+   and a nil config. This catches v0.1 compose files that would otherwise
+   start with a silently ignored setting and no idea why Jellyfin moved. The
+   JSON key `ipset_name` has no field any more, so a file containing it is
+   accepted and the key ignored like any unknown key.
+   `TestLoadConfigIpsetNameRejected` checks the exact message.
 1. Build `&Config{...}` with the defaults: `Listen "127.0.0.1:8080"`,
-   `TrustedProxies ["127.0.0.1", "::1"]`, `IpsetName "jellyfin_clients"`,
+   `TrustedProxies ["127.0.0.1", "::1"]`, `StateFile "/data/allowlist.json"`,
    `WhitelistTTL 72h`, `TokenTTL 15m`, `RequestsPerEmailPerHour 3`,
    `SMTP.Port 587`.
 2. If `os.Getenv("TYC_CONFIG")` is non-empty, `os.ReadFile` it (error returned
@@ -88,21 +96,44 @@ are applied.
 Runs once, mutates the receiver, and returns every problem at once.
 
 1. **Normalise emails**: lower-case, trim, drop empty entries; replace
-   `TrustedEmails`.
-2. **Parse proxies**: reset `proxies`, trim each entry, skip empty ones,
-   `netip.ParseAddr`, `Unmap()`, append. Bad entries are reported as
-   `TYC_TRUSTED_PROXIES (trusted_proxies): invalid address "<value>"`.
+   `TrustedEmails`. Each remaining entry must survive `mail.ParseAddress`
+   unchanged (`a.Address == e`), so display-name forms and malformed
+   addresses are reported as
+   `TYC_TRUSTED_EMAILS (trusted_emails): invalid address "<value>"`.
+2. **Parse proxies**: reset `proxies`, trim each entry, skip empty ones. If
+   `netip.ParseAddr` succeeds, `Unmap()` and append
+   `netip.PrefixFrom(ip, ip.BitLen())`, a `/32` or `/128`. Otherwise
+   `netip.ParsePrefix` and append `pfx.Masked()`, so host bits are cleared
+   (`172.28.0.5/24` becomes `172.28.0.0/24`). Entries that are neither, or a
+   prefix length out of range such as `/33`, are reported as
+   `TYC_TRUSTED_PROXIES (trusted_proxies): invalid address or CIDR "<value>"`.
+   `TestLoadConfigTrustedProxiesCIDRAndBare` covers a mixed list and `/33`.
 3. **Required strings**: `TYC_PUBLIC_URL`, `TYC_SMTP_HOST`,
    `TYC_SMTP_USERNAME`, `TYC_SMTP_PASSWORD`, `TYC_SMTP_FROM`, `TYC_LISTEN`,
-   `TYC_IPSET_NAME`. These are iterated from a map, so their order in the
+   `TYC_STATE_FILE`. These are iterated from a map, so their order in the
    error message is not stable.
 4. **Required list**: at least one trusted email after normalisation.
-5. **Formats and ranges**: `PublicURL` absolute with scheme `http` or `https`
-   and a host; `SMTP.From` accepted by `net/mail.ParseAddress`; `SMTP.Port` in
+5. **Formats and ranges**: `PublicURL` absolute with a host and scheme
+   `https`, or `http` only when the host is `localhost` or `127.0.0.1` (for
+   local testing); `SMTP.From` accepted by `net/mail.ParseAddress`; `SMTP.Port` in
    1-65535; `RequestsPerEmailPerHour >= 1`; both TTLs `>= 1s`.
 
 Each message has the form `TYC_NAME (json_key): problem`, so tests can assert
 on the env var name and operators can find the key in either source.
+
+`validate` does not open `StateFile`. `main` passes it to `newAllowlist` right
+after `loadConfig` succeeds, and exits with `allowlist: <err>` if the file
+exists but cannot be read or parsed (`TestLoadConfigStateFile` covers the
+override and the empty-value error).
+
+## Removing a setting
+
+`TYC_IPSET_NAME` shows the pattern: delete the field, its default, its
+`applyEnv` line and its `required` entry, and if operators are likely to still
+set it, add a guard at the top of `loadConfig` that fails with a message
+saying what replaced it. Keep the old key in `envKeys` in `config_test.go`,
+as `TYC_IPSET_NAME` is, so `clearEnv` unsets it; otherwise a developer shell
+that still exports it fails every config test.
 
 ## Adding a new setting
 

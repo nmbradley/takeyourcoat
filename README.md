@@ -2,65 +2,41 @@
 
 A tiny captive portal for Jellyfin. A trusted person opens the portal from
 their home network, enters their email, and clicks a magic link; the portal
-adds that household's public IPv4 address to an `ipset` list for a few days.
-A host firewall rule only lets addresses in that set reach Jellyfin, so every
-device on the network (TV, tablet, phone) is unlocked at once. Go standard
-library only, one static binary, one container, no database.
+unlocks that household's public IPv4 address for a few days, so every device
+on the network (TV, tablet, phone) can reach Jellyfin at once. It is
+**exposure reduction, not authentication**: it hides Jellyfin from the
+internet at large, and Jellyfin's own accounts remain the real access control.
+Both hostnames, the portal and Jellyfin, are served by Caddy on port 443. On
+every Jellyfin request Caddy asks the app, through `forward_auth`, whether the
+client's address is unlocked. Go standard library only, one static binary, no
+database.
+
+## How it works
+
+1. `hello.example.com` is always open. Caddy proxies it to the app.
+2. A trusted person requests a link (`POST /request`), opens it on the same
+   network (`GET /verify`) and presses Unlock (`POST /verify`). The app adds
+   their public IPv4 address to its allowlist, stored in a JSON file on a
+   volume, for `TYC_WHITELIST_TTL` (72 hours by default).
+3. For every request to `jellyfin.example.com`, Caddy's `forward_auth` first
+   sends `GET /check` to the app with the client address in
+   `X-Forwarded-For`.
+4. Unlocked address: the app answers `200` and Caddy proxies the request to
+   Jellyfin over WireGuard. Anything else: the app answers `403` with a short
+   "this network is not unlocked" page, and Caddy returns that page to the
+   client. Jellyfin never sees the request.
 
 ## Host prerequisites
 
-The app only runs `ipset add`. You create the set and the firewall rule on the
-VPS yourself:
+- Docker with the Compose plugin.
+- Inbound TCP 80, TCP 443 and UDP 443 open in the cloud firewall and in the
+  host firewall. Port 80 is for certificates and the HTTPS redirect; UDP 443 is
+  HTTP/3.
 
-```sh
-ipset create jellyfin_clients hash:ip family inet timeout 259200
-iptables -A INPUT -p tcp --dport 8920 -m set ! --match-set jellyfin_clients src -j DROP
-```
-
-The portal (`:443`) stays open to everyone; only the Jellyfin port (`8920`) is
-gated. Neither the set nor the rule survives a reboot on its own: persist them
-with `ipset save` / `iptables-save` restored at boot, or install
-`netfilter-persistent` (with `ipset-persistent`) and save after creating them.
-The set must exist before the iptables rule is restored.
-
-Four ways this rule can silently do nothing. Check each one after deploying:
-
-- **Caddy in Docker bypasses INPUT.** Traffic to a container's published port
-  goes through the FORWARD and DOCKER chains, never INPUT. Run Caddy with
-  `network_mode: host`, or put the rule in the `DOCKER-USER` chain instead.
-- **Rule order.** `-A` appends after any existing ACCEPT for the port (ufw, a
-  previous setup). Use `-I INPUT 1 ...` or confirm with `iptables -L INPUT -n
-  --line-numbers` that nothing accepts port 8920 first.
-- **IPv6.** The set is IPv4 only. If the Jellyfin hostname has an AAAA record,
-  clients connect over IPv6 and skip this rule. Either publish no AAAA record
-  for it, or add `ip6tables -A INPUT -p tcp --dport 8920 -j DROP`.
-- **Prove it.** From a network that has not verified, `curl -m 5
-  https://jellyfin.example.com:8920` must time out. Then verify and try again.
-
-## Caddy and WireGuard
-
-Caddy on the VPS terminates TLS for both hostnames. Jellyfin runs at home and
-is reached over a WireGuard tunnel, so Caddy proxies to the home peer's tunnel
-IP.
-
-```caddyfile
-hello.example.com {
-	reverse_proxy 127.0.0.1:8080
-}
-
-jellyfin.example.com:8920 {
-	reverse_proxy 10.0.0.2:8096
-}
-```
-
-Replace `10.0.0.2` with your home peer's WireGuard address. Caddy connects from
-loopback, which is in the default `TYC_TRUSTED_PROXIES`, so the client IP is
-taken from `X-Forwarded-For`.
-
-Through the tunnel, every viewer reaches Jellyfin from the VPS's WireGuard
-address. Jellyfin's brute-force lockout would then treat all users as one
-client. In Jellyfin, go to Dashboard, Networking, and add the VPS tunnel IP to
-"Known proxies" so it reads the real client from `X-Forwarded-For`.
+Nothing else. **ipset and iptables are no longer needed**: there is no set to
+create, no rule to write and nothing to persist across reboots. IPv6 is still
+not supported, but it no longer needs blocking: an IPv6 client simply gets the
+locked page.
 
 ## Configuration
 
@@ -69,28 +45,42 @@ names a JSON file that is read first; environment variables override it.
 Lists are comma-separated, durations are Go duration strings (`72h`, `15m`).
 The process refuses to start on any missing or malformed field and names it.
 
-| Env var                          | JSON key                       | Default            |
-|----------------------------------|--------------------------------|--------------------|
-| `TYC_LISTEN`                     | `listen`                       | `127.0.0.1:8080`   |
-| `TYC_PUBLIC_URL`                 | `public_url`                   | required           |
-| `TYC_TRUSTED_PROXIES`            | `trusted_proxies`              | `127.0.0.1,::1`    |
-| `TYC_TRUSTED_EMAILS`             | `trusted_emails`               | required           |
-| `TYC_IPSET_NAME`                 | `ipset_name`                   | `jellyfin_clients` |
-| `TYC_WHITELIST_TTL`              | `whitelist_ttl`                | `72h`              |
-| `TYC_TOKEN_TTL`                  | `token_ttl`                    | `15m`              |
-| `TYC_REQUESTS_PER_EMAIL_PER_HOUR`| `requests_per_email_per_hour`  | `3`                |
-| `TYC_SMTP_HOST`                  | `smtp.host`                    | required           |
-| `TYC_SMTP_PORT`                  | `smtp.port`                    | `587`              |
-| `TYC_SMTP_USERNAME`              | `smtp.username`                | required           |
-| `TYC_SMTP_PASSWORD`              | `smtp.password`                | required           |
-| `TYC_SMTP_FROM`                  | `smtp.from`                    | required           |
+| Env var                          | JSON key                       | Default                |
+|----------------------------------|--------------------------------|------------------------|
+| `TYC_LISTEN`                     | `listen`                       | `127.0.0.1:8080`       |
+| `TYC_PUBLIC_URL`                 | `public_url`                   | required               |
+| `TYC_TRUSTED_PROXIES`            | `trusted_proxies`              | `127.0.0.1,::1`        |
+| `TYC_TRUSTED_EMAILS`             | `trusted_emails`               | required               |
+| `TYC_STATE_FILE`                 | `state_file`                   | `/data/allowlist.json` |
+| `TYC_WHITELIST_TTL`              | `whitelist_ttl`                | `72h`                  |
+| `TYC_TOKEN_TTL`                  | `token_ttl`                    | `15m`                  |
+| `TYC_REQUESTS_PER_EMAIL_PER_HOUR`| `requests_per_email_per_hour`  | `3`                    |
+| `TYC_SMTP_HOST`                  | `smtp.host`                    | required               |
+| `TYC_SMTP_PORT`                  | `smtp.port`                    | `587`                  |
+| `TYC_SMTP_USERNAME`              | `smtp.username`                | required               |
+| `TYC_SMTP_PASSWORD`              | `smtp.password`                | required               |
+| `TYC_SMTP_FROM`                  | `smtp.from`                    | required               |
+
+- `TYC_LISTEN`: the shipped compose file sets `0.0.0.0:8080`, because the app
+  sits on a bridge network with Caddy. No port is published, so it is still
+  unreachable from outside.
+- `TYC_TRUSTED_PROXIES` accepts addresses and CIDR prefixes. The shipped
+  compose file sets it to the compose network's subnet, `172.28.0.0/24`, which
+  covers the Caddy container.
+- `TYC_PUBLIC_URL` must be `https://` (plain `http://` only for `localhost`).
+- `TYC_REQUESTS_PER_EMAIL_PER_HOUR` counts per email and client address, with
+  a cap of four times that per email across all addresses.
+- `TYC_STATE_FILE` is where the allowlist is kept. The compose file puts
+  `/data` on a named volume.
+- `TYC_IPSET_NAME` is gone. If it is set at all, the app refuses to start and
+  points here.
 
 ### SMTP providers
 
 Mail is sent over SMTP with STARTTLS on port 587.
 
 - **Fastmail**: host `smtp.fastmail.com`, username is your Fastmail address,
-  password is an app password (Settings → Privacy & Security → App passwords).
+  password is an app password (Settings, Privacy & Security, App passwords).
 - **Gmail**: host `smtp.gmail.com`, username is your Gmail address, password is
   an [app password](https://myaccount.google.com/apppasswords) (requires 2-Step
   Verification). Your normal password will not work.
@@ -103,8 +93,16 @@ Mail is sent over SMTP with STARTTLS on port 587.
 
 ## Deployment
 
-On the VPS, next to a copy of [`docker-compose.yml`](docker-compose.yml) edited
-with your real hostname, emails and SMTP settings:
+On the VPS, put [`docker-compose.yml`](docker-compose.yml) and
+[`Caddyfile`](Caddyfile) in one directory and edit them:
+
+- In `docker-compose.yml`: your portal URL, trusted emails and SMTP settings.
+- In `Caddyfile`: replace `hello.example.com` and `jellyfin.example.com` with
+  your two hostnames (both need DNS A records pointing at the VPS), and
+  `10.0.0.2:8096` with the address Caddy uses to reach Jellyfin, normally the
+  home peer's WireGuard address.
+
+Then:
 
 ```sh
 cp .env.example .env
@@ -113,26 +111,58 @@ $EDITOR .env          # set TYC_SMTP_PASSWORD
 docker compose up -d
 ```
 
-The container uses `network_mode: host` so it can reach the host's ipset and
-listen on loopback, drops all capabilities except `NET_ADMIN`, sets
-`no-new-privileges`, and uses a read-only filesystem. The process runs as root
-inside the container on purpose: with `no-new-privileges` the kernel ignores
-file capabilities on exec, so a non-root user plus `setcap` on ipset would
-always fail. Root holds exactly one capability, `NET_ADMIN`, and nothing else.
+Caddy obtains certificates for both hostnames on first start. Jellyfin
+clients use `https://jellyfin.example.com` with no port.
+
+## Upgrading from v0.1
+
+- Remove `TYC_IPSET_NAME` from your compose file or JSON config; the app
+  refuses to start while it is set. No new setting is required.
+- Replace your compose file with the new one (it now includes Caddy) and add
+  the `Caddyfile` next to it.
+- Stop the host Caddy (`systemctl disable --now caddy`); Caddy moves from the
+  host network into the compose network.
+- Delete the iptables and ip6tables rules for port 8920, then the set
+  (`ipset destroy jellyfin_clients`), and save your rules so they do not come
+  back at boot.
+- Jellyfin no longer needs its own port. Change client addresses from
+  `https://jellyfin.example.com:8920` to `https://jellyfin.example.com`, and
+  close 8920 in the cloud firewall.
+- Existing unlocks are lost; each household verifies once more.
+
+Step by step: [Deployment](docs/user/deployment.md#migrating-from-v01).
 
 ## Security notes
 
+- **Unprivileged container.** The app runs as UID 65532 with a read-only root
+  filesystem, `cap_drop: [ALL]`, `no-new-privileges` and no host networking.
+  It writes only its state file on `/data`.
 - **Pin the image** by version tag or, better, digest
   (`ghcr.io/nmbradley/takeyourcoat@sha256:...`). Never use `latest`.
-- **No auto-updaters** (Watchtower and similar) against this container. It has
-  `NET_ADMIN` on the host network; review each upgrade.
+- **No auto-updaters** (Watchtower and similar) against this stack. Review each
+  upgrade.
 - **Build locally** as the zero-trust alternative: clone the repo on the VPS,
   review it, and replace `image:` with `build: .` in the compose file.
 - **Protect the accounts** that can publish or receive links: enable 2FA on
   GitHub and on every trusted email account. Anyone who can read a trusted
   inbox can unlock Jellyfin for their own network.
-- Keep your real `docker-compose.yml`, `.env` and any `config.json` on the VPS
-  only; they are gitignored here.
+- **The trade-off.** v0.1 dropped unverified packets in the kernel, so
+  Jellyfin's port looked closed. Now TLS is completed by Caddy and requests are
+  rejected in userspace with a 403. Scanners can see that the hostname exists
+  and serves a locked page, and a Caddy or app bug could let requests through
+  where a kernel rule would not. In exchange there is no privileged container,
+  no host firewall to get wrong, and Jellyfin shares port 443.
+- Keep your real `docker-compose.yml`, `Caddyfile`, `.env` and any
+  `config.json` on the VPS only.
+
+## Jellyfin known proxies
+
+Jellyfin sees every viewer arriving from one address: the Caddy container as
+it appears through the tunnel. Its brute-force lockout would then treat all
+users as one client. In Jellyfin, go to Dashboard, Networking, and add the
+address Jellyfin sees connections from (check its logs; usually the VPS
+tunnel address) to "Known proxies", so it reads the real client from
+`X-Forwarded-For`.
 
 ## Using it
 
@@ -143,9 +173,20 @@ Send this to the people on your trusted list:
 2. Enter your email address and tap the button.
 3. Open the link in the email **on the same phone, still on home Wi-Fi**,
    within 15 minutes.
-4. Check the address shown and tap **Confirm**.
+4. Check the address shown and tap **Unlock**.
 5. Every device on that Wi-Fi can now reach Jellyfin for 3 days. Repeat to
-   reset the timer, or if your home IP changes.
+   reset the timer, or if your home IP changes. If Jellyfin shows "This
+   network is not unlocked", do this again.
+
+Each email unlocks one network at a time: verifying somewhere else moves the
+unlock there and locks the previous network.
+
+## Documentation
+
+- [Operator guide](docs/user/README.md): VPS setup, Caddy and WireGuard,
+  configuration, deployment, troubleshooting, security model.
+- [Developer guide](docs/dev/README.md): architecture, security design,
+  testing, packaging and CI, design decisions.
 
 ## Vendored assets
 
@@ -156,13 +197,6 @@ and embedded in the binary. SHA-256:
 `61207a40ffc02a42d1e50143651c121beab70ed413c934c1ff84fa263ba436b0`. It is
 never fetched at build or run time; upgrading is a manual copy plus updating
 this note.
-
-## Documentation
-
-- [Operator guide](docs/user/README.md): VPS setup, Caddy and WireGuard,
-  configuration, deployment, troubleshooting, security model.
-- [Developer guide](docs/dev/README.md): architecture, security design,
-  testing, packaging and CI, design decisions.
 
 ## License
 

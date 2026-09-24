@@ -14,12 +14,11 @@ RUN CGO_ENABLED=0 go build -trimpath -ldflags="-s -w" -o /takeyourcoat .
 # alpine:3.23
 FROM alpine:3.23@sha256:85fe1e81...
 LABEL org.opencontainers.image.source=... description=... licenses="MIT"
-RUN apk add --no-cache ipset
+RUN mkdir /data && chown 65532:65532 /data
 COPY --from=build /takeyourcoat /takeyourcoat
-# Runs as root on purpose. The compose file drops every capability except
-# NET_ADMIN and sets no-new-privileges. Under that flag the kernel refuses to
-# grant capabilities on exec, so a non-root user plus setcap on ipset would
-# always fail with "Operation not permitted". Root holds NET_ADMIN directly.
+# Runs unprivileged and writes only to /data.
+USER 65532:65532
+VOLUME /data
 EXPOSE 8080
 ENTRYPOINT ["/takeyourcoat"]
 ```
@@ -40,40 +39,53 @@ ENTRYPOINT ["/takeyourcoat"]
 
 | Step | Why |
 |------|-----|
-| `alpine:3.23@sha256:...` | Small base that ships an `ipset` package. Pinned by digest. |
+| `alpine:3.23@sha256:...` | Small base. Pinned by digest. Nothing is installed on top of it. |
 | `LABEL org.opencontainers.image.*` | Source repository, description and licence, so GHCR links the package to the repo. |
-| `apk add --no-cache ipset` | `ipset` is the only command the app runs. Nothing else is installed. |
+| `RUN mkdir /data && chown 65532:65532 /data` | The one writable directory, owned by the runtime user. A new named volume mounted at `/data` copies this ownership on first use, so the app can write its state file without any setup on the host. |
 | `COPY --from=build /takeyourcoat /takeyourcoat` | Only the binary crosses stages; no Go toolchain or source in the final image. |
-| (no `USER` line) | The process runs as root inside the container on purpose; see below. The comment in the Dockerfile records why. |
-| `EXPOSE 8080` | Documentation only; under `network_mode: host` it has no effect. |
+| `USER 65532:65532` | Unprivileged. 65532 is the conventional "nonroot" UID, not used by anything in Alpine. The compose file needs no `user:` line. |
+| `VOLUME /data` | Marks the state directory, so even a bare `docker run` gets a volume there and `--read-only` still leaves it writable. |
+| `EXPOSE 8080` | Documentation only. The compose file publishes no port for the app; Caddy reaches it on the compose network. |
 | `ENTRYPOINT ["/takeyourcoat"]` | Exec form, so the binary is PID 1 and receives SIGTERM directly for graceful shutdown. |
 
-### Why root with one capability
+### Why no privilege at all
 
-ipset needs `NET_ADMIN`. The compose file sets `cap_drop: [ALL]`,
-`cap_add: [NET_ADMIN]` and `no-new-privileges:true`. Under `no_new_privs` the
-kernel never adds capabilities on `execve`, so the usual pattern of a non-root
-user plus `setcap cap_net_admin+ep` on `/usr/sbin/ipset` cannot work: ipset
-would run without the capability and fail with "Operation not permitted".
+v0.1 needed `NET_ADMIN` in the host network namespace to run `ipset`, and ran
+as root because `no-new-privileges` blocks file capabilities on exec. v0.2
+enforces in the app through Caddy `forward_auth`
+([decisions](decisions.md#12-enforce-in-the-app-via-caddy-forward_auth-instead-of-ipsetiptables)),
+so the process only binds port 8080 (above 1024), makes outbound SMTP
+connections and writes files in a directory it owns. None of that needs a
+capability, so the compose file runs it with `cap_drop: [ALL]`, nothing added,
+`no-new-privileges`, `read_only: true` and no host networking.
 
-So the image has no `USER` line. Root in this container holds exactly one
-capability. Verified inside the running container: `/proc/self/status` shows
-`Uid` 0 with `CapEff` and `CapBnd` both `0000000000001000`
-(`CAP_NET_ADMIN` only). ipset, executed by the app, inherits `NET_ADMIN`
-directly. Without `CAP_DAC_OVERRIDE` and the rest, this root cannot bypass file
-permissions, load modules, change ownership or bind privileged ports.
+### Compose file and Caddyfile
 
-The trade-off, compared with a working setcap design, is that the Go process
-itself holds `NET_ADMIN`, not only the ipset child. That is accepted and
-recorded in [decisions](decisions.md#11-root-in-the-container-rather-than-non-root-plus-setcap).
-The root filesystem is read-only at run time, so nothing can replace the
-ipset binary, and the app only ever runs it with a fixed argv (see
-[security design](security-design.md#fixed-argv-exec-no-shell)).
+The repository's `docker-compose.yml` now has two services, because Caddy is
+part of the design:
+
+| Piece | Role |
+|-------|------|
+| `caddy` (`caddy:2`) | Publishes 80, 443 and 443/udp; mounts `./Caddyfile` read-only; keeps certificates on `caddy-data` and config on `caddy-config`. |
+| `takeyourcoat` | No published port; `TYC_LISTEN: 0.0.0.0:8080`; `TYC_TRUSTED_PROXIES: 172.28.0.0/24`; state on `tyc-data:/data`. |
+| `networks.web` | Bridge network pinned to `172.28.0.0/24`, so the trusted-proxy range is known in advance. |
+
+`Caddyfile` (placeholders) has two sites: `hello.example.com` proxies to
+`takeyourcoat:8080`; `jellyfin.example.com` runs
+`forward_auth takeyourcoat:8080 { uri /check }` and then proxies to the
+WireGuard peer. Operators edit the hostnames and the backend address. Both
+files are validated without starting anything:
+
+```sh
+docker compose -f docker-compose.yml config
+docker run --rm -v "$PWD/Caddyfile:/etc/caddy/Caddyfile:ro" caddy:2 caddy validate --config /etc/caddy/Caddyfile
+```
 
 ### Image size
 
-The final image is the Alpine base plus `ipset` (and its libraries) and one
-stripped static binary: about 18 MB. Check a local build with:
+The final image is the Alpine base plus one stripped static binary, a few MB
+smaller than v0.1, which also carried `ipset` and its libraries. Check a
+local build with:
 
 ```sh
 docker build -t takeyourcoat:dev .
@@ -89,13 +101,15 @@ README.md
 PLAN.md
 .env*
 docker-compose*.yml
+Caddyfile
+docs/
 *_test.go
 ```
 
-Keeps secrets (`.env`, the real compose file) and history out of the build
-context, and keeps tests out of the image build. The `docs/` directory is not
-excluded; it enters the build context but contains no Go files, so it does not
-affect the binary.
+Keeps secrets and deployment details (`.env`, the real compose file, the
+Caddyfile with real hostnames) and history out of the build context, keeps
+tests out of the image build, and leaves out `docs/`, which the binary never
+needed.
 
 ## Workflows
 
@@ -157,8 +171,8 @@ For tag `v0.2.0`, `metadata-action` produces:
 | `0.2` | `type=semver,pattern={{major}}.{{minor}}` |
 | `latest` | `type=raw,value=latest` |
 
-Git tags keep the `v`; image tags drop it, so git tag `v0.1.0` is image
-`0.1.0`, which is what the repository's `docker-compose.yml` pins
+Git tags keep the `v`; image tags drop it, so git tag `v0.2.0` is image
+`0.2.0`, which is what the repository's `docker-compose.yml` pins
 ([deployment](../user/deployment.md#pinning-the-image)). Tags that are not
 valid semver after the `v` produce no version tags.
 

@@ -2,64 +2,109 @@
 
 [Operator guide](README.md) > Deployment
 
-Prerequisites: the set, the firewall rule and Caddy from
-[VPS setup](vps-setup.md) and [Caddy and WireGuard](caddy-and-wireguard.md).
+Prerequisites: Docker and open ports from [VPS setup](vps-setup.md), and the
+WireGuard tunnel from [Caddy and WireGuard](caddy-and-wireguard.md).
 
-## The compose file, line by line
+## The compose file, service by service
 
-Keep your real copy on the VPS only, for example in `/opt/takeyourcoat/`. The
-one in the repository uses placeholders.
+Keep your real copy on the VPS only, for example in `/opt/takeyourcoat/`,
+next to your edited `Caddyfile`. The ones in the repository use placeholders.
 
 ```yaml
 services:
+  caddy:
+    image: caddy:2
+    restart: unless-stopped
+    ports:
+      - "80:80"
+      - "443:443"
+      - "443:443/udp"
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy-data:/data
+      - caddy-config:/config
+    networks: [web]
+
   takeyourcoat:
     # Pin to a version tag or digest, never latest.
-    image: ghcr.io/nmbradley/takeyourcoat:0.1.0
+    image: ghcr.io/nmbradley/takeyourcoat:0.2.0
     # Or build from source on the VPS instead of pulling:
     # build: .
-    network_mode: host
-    cap_drop: [ALL]
-    cap_add: [NET_ADMIN]
-    read_only: true
-    security_opt: [no-new-privileges:true]
     restart: unless-stopped
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    volumes:
+      - tyc-data:/data
+    networks: [web]
     environment:
+      TYC_LISTEN: 0.0.0.0:8080
+      TYC_TRUSTED_PROXIES: 172.28.0.0/24
       TYC_PUBLIC_URL: https://hello.example.com
       TYC_TRUSTED_EMAILS: alice@example.com,bob@example.com
-      TYC_IPSET_NAME: jellyfin_clients
       TYC_WHITELIST_TTL: 72h
-      TYC_SMTP_HOST: smtp.fastmail.com
-      TYC_SMTP_USERNAME: you@example.com
+      TYC_SMTP_HOST: smtp.resend.com
+      TYC_SMTP_USERNAME: resend
       TYC_SMTP_PASSWORD: ${TYC_SMTP_PASSWORD}
-      TYC_SMTP_FROM: Jellyfin Access <you@example.com>
+      TYC_SMTP_FROM: Jellyfin Access <hello@example.com>
+
+networks:
+  web:
+    ipam:
+      config:
+        - subnet: 172.28.0.0/24
+
+volumes:
+  caddy-data:
+  caddy-config:
+  tyc-data:
 ```
+
+### `caddy`
+
+| Line | Why |
+|------|-----|
+| `image: caddy:2` | The official Caddy image. Pin it to a digest like the app if you want the same guarantees (see [Pinning](#pinning-the-image)). |
+| `ports: 80, 443, 443/udp` | The only published ports. 80 for certificates and redirects, 443 TCP for HTTPS, 443 UDP for HTTP/3. |
+| `./Caddyfile:/etc/caddy/Caddyfile:ro` | Your Caddyfile, read-only. See [Caddy and WireGuard](caddy-and-wireguard.md#caddyfile). |
+| `caddy-data:/data` | Certificates and ACME account keys. Keep this volume, or Caddy requests new certificates on every recreate and can hit rate limits. |
+| `caddy-config:/config` | Caddy's autosaved config. |
+| `networks: [web]` | Shares the `web` network with the app, so `takeyourcoat:8080` resolves. |
+
+Caddy is part of the compose project because `forward_auth` makes it part of
+the design: it has to reach the app by name on every Jellyfin request.
+
+### `takeyourcoat`
 
 | Line | Why |
 |------|-----|
 | `image: ...` | A fixed release, never `latest`. See [Pinning](#pinning-the-image). |
 | `# build: .` | Swap in to build from a reviewed checkout instead. See [Building locally](#building-locally-on-the-vps). |
-| `network_mode: host` | ipset entries live in a network namespace. Host networking puts `ipset add` in the host's namespace, where your firewall rule reads the set. It also lets the app listen on the host's `127.0.0.1:8080`, where host Caddy reaches it, without publishing a port to the internet. |
-| `cap_drop: [ALL]` | Starts from zero Linux capabilities. |
-| `cap_add: [NET_ADMIN]` | The one capability `ipset add` needs. Nothing else is granted, so the container cannot, for example, bind privileged ports, change file ownership or load kernel modules. |
-| `read_only: true` | The root filesystem is read-only. The app writes nothing to disk, and nobody can drop a replacement `ipset` binary into the image at run time. |
-| `security_opt: [no-new-privileges:true]` | No process in the container can gain privileges on exec, through setuid binaries or file capabilities. The app already holds everything it will ever get: `NET_ADMIN`. |
-| `restart: unless-stopped` | Comes back after crashes and reboots. |
-| `environment:` | The whole configuration. See [Configuration](configuration.md). |
+| `read_only: true` | The root filesystem is read-only. The only writable path is the `/data` volume. |
+| `cap_drop: [ALL]` | No Linux capabilities at all. The app binds an unprivileged port, writes one file it owns and makes outbound SMTP connections; none of that needs a capability. |
+| `security_opt: [no-new-privileges:true]` | No process in the container can gain privileges on exec, through setuid binaries or file capabilities. |
+| `tyc-data:/data` | The allowlist, `/data/allowlist.json`. See [Configuration](configuration.md#the-state-file). |
+| `networks: [web]` | Reachable from Caddy as `takeyourcoat`. No `ports:` entry, so nothing outside the compose network can connect to it. |
+| `TYC_LISTEN: 0.0.0.0:8080` | Listen on the container's network interface so Caddy can reach it. The default, `127.0.0.1`, would only be reachable from inside the container. |
+| `TYC_TRUSTED_PROXIES: 172.28.0.0/24` | Believe `X-Forwarded-For` from anything on the `web` network, which is where Caddy is. See [Trusted proxies](configuration.md#trusted-proxies). |
+| `environment:` (the rest) | The configuration. See [Configuration](configuration.md). |
 | `TYC_SMTP_PASSWORD: ${TYC_SMTP_PASSWORD}` | Interpolated by Compose from `.env` so the secret is not in the compose file. |
 
-Settings not listed use their defaults: listen on `127.0.0.1:8080`, trust
-`127.0.0.1` and `::1` as proxies, 15 minute links, 3 links per email per hour,
-SMTP port 587.
+There is no `user:` line: the image already runs as UID 65532
+(`USER 65532:65532` in the Dockerfile). There is no `cap_add` and no
+`network_mode: host`. In v0.1 both were needed so the app could change the
+host's ipset; now the app only answers Caddy, so it needs neither the host's
+network namespace nor any privilege.
 
-The app runs as **root inside the container, on purpose**. With
-`no-new-privileges` the kernel ignores file capabilities on exec, so a
-non-root user plus `setcap` on ipset could never gain `NET_ADMIN`. Root here
-holds exactly one capability: inside the container `/proc/self/status` shows
-`Uid` 0 with `CapEff` and `CapBnd` both `0000000000001000` (`NET_ADMIN` only).
-It cannot bypass file permissions, load modules or use any other capability.
-Do not add a `user:` line; see
-[Troubleshooting](troubleshooting.md#ipset-add-permission-denied).
-`EXPOSE 8080` in the Dockerfile has no effect under host networking.
+Settings not listed use their defaults: state file `/data/allowlist.json`,
+15 minute links, 3 links per email per client address per hour, SMTP port 587.
+
+### `networks` and `volumes`
+
+| Block | Why |
+|-------|-----|
+| `web` with `subnet: 172.28.0.0/24` | A fixed subnet, so `TYC_TRUSTED_PROXIES` can name it. Without it Docker picks a range, and it can differ between hosts. If `172.28.0.0/24` clashes with something on your VPS, pick another private range and change both lines. |
+| `caddy-data`, `caddy-config`, `tyc-data` | Named volumes, managed by Docker. They survive `docker compose down` and upgrades; `docker compose down -v` deletes them. |
 
 ## The `.env` file
 
@@ -94,55 +139,61 @@ ${EDITOR:-nano} /opt/takeyourcoat/.env
 ```sh
 cd /opt/takeyourcoat
 sudo docker compose up -d
-sudo docker compose logs takeyourcoat
+sudo docker compose logs takeyourcoat caddy
 ```
 
-A healthy start logs one line:
+A healthy app start logs one line:
 
 ```text
-2026/09/24 12:00:00 listening on 127.0.0.1:8080
+2026/09/24 12:00:00 listening on 0.0.0.0:8080
 ```
 
-A successful unlock logs:
+Caddy logs that it obtained certificates for both hostnames. A successful
+unlock logs:
 
 ```text
-2026/09/24 12:05:31 whitelisted 203.0.113.5 for alice@example.com
+2026/09/24 12:05:31 unlocked 203.0.113.5 for alice@example.com
 ```
 
-Then walk the flow from a phone on a household network and confirm with
-`sudo ipset list jellyfin_clients` and the `curl` test in
-[VPS setup](vps-setup.md#6-the-four-ways-the-rule-silently-does-nothing).
+Then prove the gate: from a network that has not verified,
+`curl -s -o /dev/null -w '%{http_code}\n' https://jellyfin.example.com` must
+print `403`. Walk the flow from a phone on that network and it should print
+Jellyfin's own status. See
+[VPS setup](vps-setup.md#3-two-ways-it-can-go-wrong).
 
 ## Pinning the image
 
 Images are published to `ghcr.io/nmbradley/takeyourcoat` when a `v*` tag is
-pushed. The release workflow produces these tags for git tag `v0.1.0`:
+pushed. The release workflow produces these tags for git tag `v0.2.0`:
 
 | Image tag | Moves? |
 |-----------|--------|
-| `0.1.0` | No, one release |
-| `0.1` | Yes, follows the latest `0.1.x` |
+| `0.2.0` | No, one release |
+| `0.2` | Yes, follows the latest `0.2.x` |
 | `latest` | Yes, follows every release |
 
-Git tags keep the leading `v` (`v0.1.0`); image tags do not (`0.1.0`),
+Git tags keep the leading `v` (`v0.2.0`); image tags do not (`0.2.0`),
 because the workflow uses the semver `{{version}}` pattern. The sample compose
-file pins `:0.1.0`.
+file pins `:0.2.0`.
 
-- **Pin a full version** (`:0.1.0`) at minimum. Never use `latest` or `0.1`.
+- **Pin a full version** (`:0.2.0`) at minimum. Never use `latest` or `0.2`.
 - **Better, pin the digest**, which cannot be re-pointed even if the tag is:
 
   ```sh
-  sudo docker buildx imagetools inspect ghcr.io/nmbradley/takeyourcoat:0.1.0
+  sudo docker buildx imagetools inspect ghcr.io/nmbradley/takeyourcoat:0.2.0
   ```
 
   Copy the top-level `Digest:` value into the compose file:
 
   ```yaml
-      image: ghcr.io/nmbradley/takeyourcoat:0.1.0@sha256:<digest>
+      image: ghcr.io/nmbradley/takeyourcoat:0.2.0@sha256:<digest>
   ```
 
-- **No auto-updaters** (Watchtower and similar) against this container. It has
-  `NET_ADMIN` on the host network namespace; review each upgrade by hand.
+  The same works for `caddy:2`: inspect it and pin `caddy:2@sha256:<digest>`.
+
+- **No auto-updaters** (Watchtower and similar) against either container. Caddy
+  holds your TLS keys and decides who reaches Jellyfin; review each upgrade by
+  hand.
 
 ## Building locally on the VPS
 
@@ -163,8 +214,9 @@ sudo docker compose build
 sudo docker compose up -d
 ```
 
-The build context excludes `.env*`, `docker-compose*.yml` and `.git` (see
-`.dockerignore`), so your secrets never enter the image. The Dockerfile's base
+The build context excludes `.env*`, `docker-compose*.yml`, `Caddyfile`, `docs/`
+and `.git` (see `.dockerignore`), so your secrets and hostnames never enter the
+image. The Dockerfile's base
 images are pinned by digest, so the same commit always builds on the same bases.
 
 ## Upgrading
@@ -184,9 +236,10 @@ images are pinned by digest, so the same commit always builds on the same bases.
 
 4. Check the log for `listening on`.
 
-What survives a restart: entries in the ipset (they live in the kernel). What
-does not: outstanding email links and rate-limit counters (they live in
-memory). Anyone mid-flow simply requests a new link.
+What survives a restart or upgrade: unlocked addresses (in
+`/data/allowlist.json` on the `tyc-data` volume) and Caddy's certificates (on
+`caddy-data`). What does not: outstanding email links and rate-limit counters
+(they live in memory). Anyone mid-flow simply requests a new link.
 
 ## Viewing logs
 
@@ -197,11 +250,54 @@ sudo docker compose logs -f takeyourcoat
 
 | Log line | Meaning |
 |----------|---------|
-| `listening on 127.0.0.1:8080` | Started. |
-| `whitelisted <ip> for <email>` | Someone unlocked a network. |
+| `listening on 0.0.0.0:8080` | Started. |
+| `unlocked <ip> for <email>` | Someone unlocked a network. |
+| `unlocked <ip> for <email>, replacing <old>` | Someone unlocked a new network; their previous address `<old>` is locked again. |
 | `send mail to <email>: <error>` | The link was generated but the email failed. See [Troubleshooting](troubleshooting.md#mail-never-arrives). |
-| `ipset add <ip>: ipset [add ...]: exit status 1: <ipset output>` | The unlock failed on the host side. See [Troubleshooting](troubleshooting.md). |
+| `allowlist add <ip>: <error>` | The unlock could not be saved, usually a permission problem on `/data`. See [Troubleshooting](troubleshooting.md#state-file-permission-denied). |
+| `allowlist <path>: <error>; moving it to <path>.corrupt and starting empty` | The state file was corrupt. It was renamed aside and every household must verify again. See [Configuration](configuration.md#the-state-file). |
+| `allowlist: <error>` | Refused to start: the state file could not be read, or a corrupt one could not be moved aside. See [Troubleshooting](troubleshooting.md#state-file-permission-denied). |
 | `config: <field>: <problem>` | Refused to start. See [Configuration](configuration.md#validation). |
 
-The SMTP password is never logged. Requests for unknown email addresses are
-not logged at all.
+`/check` requests are not logged; Caddy makes one per Jellyfin request. The
+SMTP password is never logged. Requests for unknown email addresses are not
+logged at all.
+
+## Migrating from v0.1
+
+v0.1 gated Jellyfin with an ipset set and an iptables rule on port 8920, with
+the app on host networking holding `NET_ADMIN` and Caddy on the host. v0.2
+drops all of that.
+
+1. Stop the old stack: `sudo docker compose down` in `/opt/takeyourcoat`.
+2. Stop the host Caddy so ports 80 and 443 are free:
+   `sudo systemctl disable --now caddy`. Its Caddyfile is replaced by the one
+   in the repository.
+3. Remove the host firewall pieces, rule first, then the set:
+
+   ```sh
+   sudo iptables -D INPUT -p tcp --dport 8920 -m set ! --match-set jellyfin_clients src -j DROP
+   sudo ip6tables -D INPUT -p tcp --dport 8920 -j DROP
+   sudo ipset destroy jellyfin_clients
+   sudo netfilter-persistent save
+   ```
+
+   Saving matters: otherwise the old rule and set come back at boot. If you
+   installed `ipset-persistent` only for this, you can remove it.
+4. Replace `docker-compose.yml` with the new one and copy your settings across.
+   **Remove `TYC_IPSET_NAME`**; the app refuses to start while it is set. No
+   new setting is required: `TYC_LISTEN`, `TYC_TRUSTED_PROXIES` and the
+   `tyc-data` volume are already in the new file.
+5. Put the repository's `Caddyfile` next to it and edit the two hostnames and
+   the Jellyfin backend address (see
+   [Caddy and WireGuard](caddy-and-wireguard.md#caddyfile)). Jellyfin no longer
+   needs a port of its own: the site is `jellyfin.example.com`, not
+   `jellyfin.example.com:8920`.
+6. `sudo docker compose up -d`, then check both logs.
+7. In the cloud firewall, open UDP 443 and close TCP 8920.
+8. Change the server address in every Jellyfin client from
+   `https://jellyfin.example.com:8920` to `https://jellyfin.example.com`.
+9. Check Jellyfin's **Known proxies** still matches the address it sees
+   connections from ([Caddy and WireGuard](caddy-and-wireguard.md#jellyfin-known-proxies)).
+10. Existing unlocks are lost, because they lived in the ipset. Tell your
+    trusted people to verify once more.

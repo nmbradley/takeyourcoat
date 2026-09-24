@@ -1,8 +1,10 @@
 # takeyourcoat developer guide
 
 takeyourcoat is a single Go `package main` with no dependencies outside the
-standard library. It serves a four-route web portal, sends a magic link over
-SMTP, and on confirmation runs `ipset add`. Operators should read
+standard library. It serves a small web portal, sends a magic link over
+SMTP, and on confirmation adds the client's IPv4 address to an allowlist kept
+in a JSON file. Caddy gates Jellyfin by calling the app's `GET /check`
+through `forward_auth`. Operators should read
 [the operator guide](../user/README.md) instead.
 
 ## Pages
@@ -12,7 +14,7 @@ SMTP, and on confirmation runs `ipset add`. Operators should read
 | [Architecture](architecture.md) | Files and functions, the request lifecycle of each route, middleware, embedded CSS |
 | [Security design](security-design.md) | Each control and the function that implements it |
 | [Configuration internals](configuration-internals.md) | `loadConfig`, `applyEnv`, `validate`, adding a setting |
-| [Testing](testing.md) | Test layout, the `runIpset` fake, handler tests, adding a test |
+| [Testing](testing.md) | Test layout, the allowlist in tests, handler and `/check` tests, adding a test |
 | [Packaging and CI](packaging-and-ci.md) | Dockerfile, workflows, releases, digest updates |
 | [Decisions](decisions.md) | Design decisions and the alternatives rejected |
 
@@ -49,16 +51,17 @@ docker build -t takeyourcoat:dev .
 
 ## Rules for working on this code
 
-- **Only ever run the app inside Docker, and never with `NET_ADMIN` on a
-  development machine.** The binary's one side effect is changing the kernel's
-  ipset state. On a laptop that is at best an error and at worst a change to
-  your own host's firewall sets. Tests cover the behaviour without it.
-- **Tests never exec the real `ipset`.** `TestMain` in `ipset_test.go` replaces
-  the package variable `runIpset` with a function that always fails, and tests
-  that need a working ipset install a recording fake. See
+- **Only ever run the app inside Docker.** It needs no privilege, but its
+  default state file is `/data/allowlist.json`, and tests cover the behaviour
+  without running it.
+- **Tests write state only under `t.TempDir()`.** `newTestServer` and
+  `newTestAllowlist` point the allowlist at a temporary file. See
   [Testing](testing.md).
+- **No `os/exec`.** The app starts no processes; keep it that way so the
+  container can stay capability-free. See [Security design](security-design.md#no-shell-no-exec).
 - **Standard library only.** Adding a module dependency changes the security
-  posture of a `NET_ADMIN` container; see [Decisions](decisions.md).
+  posture of the process that decides who reaches Jellyfin; see
+  [Decisions](decisions.md).
 - **No secrets in logs.** Never log the `Config` struct or the SMTP password.
 - Placeholders only in code, tests and docs: `hello.example.com`,
   `jellyfin.example.com`, `alice@example.com`, and `203.0.113.0/24` or

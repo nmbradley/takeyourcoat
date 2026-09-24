@@ -9,21 +9,26 @@
    `https://hello.example.com`.
 2. She types her email address and taps **Send link**. The page always says a
    link is on its way, whether or not the address is on the list.
-3. If the address is trusted and has not asked too often (3 times per hour by
-   default), the portal emails her a link that works once and expires after
+3. If the address is trusted and has not asked too often (3 times per hour
+   from her network by default), the portal emails her a link that works once and expires after
    15 minutes.
 4. She opens the link on the same phone, still on home Wi-Fi. The page shows
    the public IPv4 address the portal sees and an **Unlock** button. Opening
    the link does nothing by itself, so mail scanners that prefetch links cannot
    use it up.
-5. She taps **Unlock**. The portal runs `ipset add` to put that address in the
-   `jellyfin_clients` set with a 72 hour timeout.
-6. The VPS firewall drops traffic to the Jellyfin port (8920) from any address
-   that is not in the set. Her address now is, so the Apple TV, tablet and
-   laptop in her house can all reach `https://jellyfin.example.com:8920`.
-7. After 72 hours the kernel removes the entry on its own. Doing the flow again
-   before then resets the timer, and is also what to do when her home IP
-   changes.
+5. She taps **Unlock**. The portal adds that address to its allowlist under
+   her email with a 72 hour expiry and saves the list to
+   `/data/allowlist.json`. Each email unlocks one network at a time: if she
+   later verifies from somewhere else, her unlock moves there.
+6. Her Apple TV opens `https://jellyfin.example.com`. Before proxying, Caddy
+   asks the portal `GET /check` with the TV's address (the household address)
+   in `X-Forwarded-For`. It is on the list, so the portal answers `200` and
+   Caddy passes the request through the tunnel to Jellyfin. The tablet and
+   laptop in her house get the same answer.
+7. A device on any other network gets `403` and a page saying "This network is
+   not unlocked", with a link to the portal. Jellyfin never sees the request.
+8. After 72 hours the entry expires. Doing the flow again before then resets
+   the timer, and is also what to do when her home IP changes.
 
 ## The pieces
 
@@ -32,25 +37,23 @@
    +-------------------------------------------------------+
    |  phone ---- Wi-Fi router ---- Apple TV, tablet, ...    |
    +-------------------------------------------------------+
-        |  HTTPS :443                     |  HTTPS :8920
-        |  (portal, always open)          |  (Jellyfin, gated)
-        v                                 v
-   +----------------------------- VPS ------------------------------+
-   |                                                                |
-   |   iptables INPUT:  tcp dport 8920, src NOT in jellyfin_clients |
-   |                    -> DROP                                     |
-   |        |                               ^                       |
-   |        v                               | ipset add ... timeout |
-   |   +---------+   127.0.0.1:8080   +-------------------------+   |
-   |   |  Caddy  | -----------------> | takeyourcoat container  |   |
-   |   |  :443   |                    | (host network,          |   |
-   |   |  :8920  |                    |  NET_ADMIN only)        |   |
-   |   +---------+                    +-------------------------+   |
-   |        |                               |                       |
-   |        | 10.0.0.2:8096                 | SMTP STARTTLS :587    |
-   |        v                               v                       |
-   |   wg0 (10.0.0.1)                  your mail provider           |
-   +--------|-------------------------------------------------------+
+        |  HTTPS :443 hello.example.com
+        |  HTTPS :443 jellyfin.example.com
+        v
+   +----------------------------- VPS ---------------------------------+
+   |   compose network "web" (172.28.0.0/24)                           |
+   |   +---------------+  hello: reverse_proxy   +--------------------+ |
+   |   |  Caddy        | ----------------------> | takeyourcoat :8080 | |
+   |   |  :80 :443     |                         | UID 65532, no caps | |
+   |   |               |  jellyfin: forward_auth | /data/allowlist    | |
+   |   |               | ---- GET /check ------> |   .json (volume)   | |
+   |   |               | <--- 200 ok / 403 ----- |                    | |
+   |   +---------------+                         +--------------------+ |
+   |        | on 200 only: reverse_proxy               | SMTP :587      |
+   |        | 10.0.0.2:8096                            v                |
+   |        v                                     your mail provider    |
+   |   wg0 (10.0.0.1) on the host                                       |
+   +--------|----------------------------------------------------------+
             |  WireGuard tunnel
             v
    +-------------- your home server ----------------+
@@ -59,12 +62,12 @@
    +-------------------------------------------------+
 ```
 
-- **Caddy** terminates TLS for both hostnames. The portal hostname proxies to
-  the app on loopback; the Jellyfin hostname proxies through the tunnel.
-- **takeyourcoat** serves four page routes and one stylesheet, sends mail, and runs exactly one
-  command: `ipset add <set> <ip> timeout <seconds> -exist`.
-- **ipset and iptables** are yours. You create the set and the rule once; the
-  app only adds entries.
+- **Caddy** terminates TLS for both hostnames on 443. The portal hostname
+  proxies to the app. The Jellyfin hostname first runs `forward_auth` against
+  the app's `/check`, and only on a `200` proxies through the tunnel.
+- **takeyourcoat** serves the portal pages, the stylesheet and `/check`, sends
+  mail, and keeps the allowlist in memory and in one JSON file on a volume. It
+  runs unprivileged, has no published port, and executes no commands.
 - **WireGuard** carries Jellyfin traffic from the VPS to your home, so your
   home IP is never published and your home router needs no open ports.
 

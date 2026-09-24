@@ -7,13 +7,12 @@ RUN CGO_ENABLED=0 go build -trimpath -ldflags="-s -w" -o /takeyourcoat .
 # alpine:3.23
 FROM alpine:3.23@sha256:85fe1e81d6758c208f3e1eed4338a1997e19d4be002d4dd32d3100c9a8c010a0
 LABEL org.opencontainers.image.source="https://github.com/nmbradley/takeyourcoat" \
-      org.opencontainers.image.description="Captive portal that whitelists a household IPv4 in ipset" \
+      org.opencontainers.image.description="Captive portal that unlocks a household IPv4 for Jellyfin via Caddy forward_auth" \
       org.opencontainers.image.licenses="MIT"
-RUN apk add --no-cache ipset
+RUN mkdir /data && chown 65532:65532 /data
 COPY --from=build /takeyourcoat /takeyourcoat
-# Runs as root on purpose. The compose file drops every capability except
-# NET_ADMIN and sets no-new-privileges. Under that flag the kernel refuses to
-# grant capabilities on exec, so a non-root user plus setcap on ipset would
-# always fail with "Operation not permitted". Root holds NET_ADMIN directly.
+# Runs unprivileged and writes only to /data.
+USER 65532:65532
+VOLUME /data
 EXPOSE 8080
 ENTRYPOINT ["/takeyourcoat"]
