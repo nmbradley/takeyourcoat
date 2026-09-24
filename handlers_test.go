@@ -68,14 +68,14 @@ func TestIndexRendersFormWithSecurityHeaders(t *testing.T) {
 	if w.Code != 200 || !strings.Contains(w.Body.String(), `name="email"`) || !strings.Contains(w.Body.String(), `action="/request"`) {
 		t.Fatalf("index: %d %s", w.Code, w.Body)
 	}
-	if !strings.HasPrefix(w.Body.String(), "<!doctype html>") || !strings.Contains(w.Body.String(), `href="/static/pico.classless.min.css"`) {
+	if !strings.HasPrefix(w.Body.String(), "<!doctype html>") || !strings.Contains(w.Body.String(), `href="https://hello.example.com/static/pico.classless.min.css"`) {
 		t.Fatalf("index not wrapped in layout: %s", w.Body)
 	}
 	if !strings.Contains(w.Body.String(), "<h1>May I Take Your Coat?</h1>") {
 		t.Fatalf("index missing header: %s", w.Body)
 	}
 	for k, v := range map[string]string{
-		"Content-Security-Policy":   "default-src 'none'; style-src 'self'; form-action 'self'; frame-ancestors 'none'; base-uri 'none'",
+		"Content-Security-Policy":   "default-src 'none'; style-src 'self' https://hello.example.com; form-action 'self'; frame-ancestors 'none'; base-uri 'none'",
 		"Strict-Transport-Security": "max-age=31536000",
 		"X-Content-Type-Options":    "nosniff",
 		"Referrer-Policy":           "no-referrer",
@@ -260,7 +260,8 @@ func assertLocked(t *testing.T, w *httptest.ResponseRecorder, msg string) {
 	t.Helper()
 	body := w.Body.String()
 	if w.Code != 403 || !strings.Contains(body, msg) || !strings.Contains(body, `href="https://hello.example.com/"`) ||
-		!strings.HasPrefix(body, "<!doctype html>") {
+		!strings.HasPrefix(body, "<!doctype html>") ||
+		!strings.Contains(body, `href="https://hello.example.com/static/pico.classless.min.css"`) {
 		t.Errorf("want locked page: %d %s", w.Code, body)
 	}
 }

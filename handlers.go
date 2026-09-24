@@ -7,6 +7,7 @@ import (
 	"log"
 	"net/http"
 	"net/netip"
+	"net/url"
 	"slices"
 	"strings"
 	"time"
@@ -35,6 +36,8 @@ type server struct {
 	capper  *limiter // per email across all IPs, a spam cap
 	trusted map[string]bool
 	send    func(to, link string) error
+	static  string // PublicURL without trailing slash; stylesheets load from here
+	csp     string
 }
 
 func newServer(cfg *Config, allow *allowlist, send func(to, link string) error) *server {
@@ -42,6 +45,9 @@ func newServer(cfg *Config, allow *allowlist, send func(to, link string) error) 
 	for _, e := range cfg.TrustedEmails {
 		trusted[e] = true
 	}
+	// Absolute stylesheet URLs so the locked page, served on the gated
+	// hostname, still loads CSS from the portal. validate ensures this parses.
+	u, _ := url.Parse(cfg.PublicURL)
 	return &server{
 		cfg:     cfg,
 		allow:   allow,
@@ -50,13 +56,15 @@ func newServer(cfg *Config, allow *allowlist, send func(to, link string) error) 
 		capper:  newLimiter(4*cfg.RequestsPerEmailPerHour, time.Hour),
 		trusted: trusted,
 		send:    send,
+		static:  strings.TrimRight(cfg.PublicURL, "/"),
+		csp:     "default-src 'none'; style-src 'self' " + u.Scheme + "://" + u.Host + "; form-action 'self'; frame-ancestors 'none'; base-uri 'none'",
 	}
 }
 
-func securityHeaders(next http.Handler) http.Handler {
+func (s *server) securityHeaders(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		h := w.Header()
-		h.Set("Content-Security-Policy", "default-src 'none'; style-src 'self'; form-action 'self'; frame-ancestors 'none'; base-uri 'none'")
+		h.Set("Content-Security-Policy", s.csp)
 		h.Set("Strict-Transport-Security", "max-age=31536000")
 		h.Set("X-Content-Type-Options", "nosniff")
 		h.Set("Referrer-Policy", "no-referrer")
@@ -65,9 +73,12 @@ func securityHeaders(next http.Handler) http.Handler {
 	})
 }
 
-func render(w http.ResponseWriter, status int, page string, data any) {
+func (s *server) render(w http.ResponseWriter, status int, page string, data any) {
 	var buf bytes.Buffer
-	if err := pages[page].Execute(&buf, data); err != nil {
+	if err := pages[page].Execute(&buf, struct {
+		Static string
+		Data   any
+	}{s.static, data}); err != nil {
 		log.Printf("render %s: %v", page, err)
 		http.Error(w, "internal error", http.StatusInternalServerError)
 		return
@@ -97,13 +108,13 @@ func (s *server) clientIP(r *http.Request) (ip netip.Addr, ok bool) {
 }
 
 func (s *server) handleIndex(w http.ResponseWriter, r *http.Request) {
-	render(w, http.StatusOK, "index", nil)
+	s.render(w, http.StatusOK, "index", nil)
 }
 
 func (s *server) handleRequest(w http.ResponseWriter, r *http.Request) {
 	r.Body = http.MaxBytesReader(w, r.Body, 4096)
 	if err := r.ParseForm(); err != nil {
-		render(w, http.StatusBadRequest, "error", "That request could not be read.")
+		s.render(w, http.StatusBadRequest, "error", "That request could not be read.")
 		return
 	}
 	email := strings.ToLower(strings.TrimSpace(r.PostForm.Get("email")))
@@ -120,21 +131,21 @@ func (s *server) handleRequest(w http.ResponseWriter, r *http.Request) {
 			}()
 		}
 	}
-	render(w, http.StatusOK, "sent", nil)
+	s.render(w, http.StatusOK, "sent", nil)
 }
 
 func (s *server) handleVerifyGet(w http.ResponseWriter, r *http.Request) {
 	ip, ok := s.clientIP(r)
 	if !ok {
-		render(w, http.StatusBadRequest, "error", badIPMessage)
+		s.render(w, http.StatusBadRequest, "error", badIPMessage)
 		return
 	}
 	tok := r.URL.Query().Get("token")
 	if _, ok := s.tokens.peek(tok); !ok {
-		render(w, http.StatusBadRequest, "error", "That link is invalid or has expired.")
+		s.render(w, http.StatusBadRequest, "error", "That link is invalid or has expired.")
 		return
 	}
-	render(w, http.StatusOK, "confirm", struct {
+	s.render(w, http.StatusOK, "confirm", struct {
 		IP    netip.Addr
 		Token string
 	}{ip, tok})
@@ -143,25 +154,25 @@ func (s *server) handleVerifyGet(w http.ResponseWriter, r *http.Request) {
 func (s *server) handleVerifyPost(w http.ResponseWriter, r *http.Request) {
 	r.Body = http.MaxBytesReader(w, r.Body, 4096)
 	if err := r.ParseForm(); err != nil {
-		render(w, http.StatusBadRequest, "error", "That request could not be read.")
+		s.render(w, http.StatusBadRequest, "error", "That request could not be read.")
 		return
 	}
 	ip, ok := s.clientIP(r)
 	if !ok {
-		render(w, http.StatusBadRequest, "error", badIPMessage)
+		s.render(w, http.StatusBadRequest, "error", badIPMessage)
 		return
 	}
 	// Consume only after the add is saved, so a failed save leaves the link usable.
 	tok := r.PostForm.Get("token")
 	email, ok := s.tokens.peek(tok)
 	if !ok {
-		render(w, http.StatusBadRequest, "error", "That link is invalid or has expired.")
+		s.render(w, http.StatusBadRequest, "error", "That link is invalid or has expired.")
 		return
 	}
 	old, err := s.allow.add(ip, email)
 	if err != nil {
 		log.Printf("allowlist add %s: %v", ip, err)
-		render(w, http.StatusInternalServerError, "error", "Something went wrong unlocking your network. Please try again later.")
+		s.render(w, http.StatusInternalServerError, "error", "Something went wrong unlocking your network. Please try again later.")
 		return
 	}
 	s.tokens.consume(tok)
@@ -170,7 +181,7 @@ func (s *server) handleVerifyPost(w http.ResponseWriter, r *http.Request) {
 	} else {
 		log.Printf("unlocked %s for %s", ip, email)
 	}
-	render(w, http.StatusOK, "success", struct {
+	s.render(w, http.StatusOK, "success", struct {
 		IP    netip.Addr
 		Hours int
 	}{ip, int(time.Duration(s.cfg.WhitelistTTL).Hours())})
@@ -188,5 +199,5 @@ func (s *server) handleCheck(w http.ResponseWriter, r *http.Request) {
 		w.Write([]byte("ok"))
 		return
 	}
-	render(w, http.StatusForbidden, "locked", struct{ Message, PublicURL string }{msg, s.cfg.PublicURL})
+	s.render(w, http.StatusForbidden, "locked", struct{ Message, PublicURL string }{msg, s.cfg.PublicURL})
 }

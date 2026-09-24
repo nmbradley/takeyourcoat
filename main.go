@@ -27,7 +27,7 @@ func (s *server) routes() http.Handler {
 		w.Header().Set("Cache-Control", "public, max-age=31536000, immutable")
 		files.ServeHTTP(w, r)
 	})
-	return securityHeaders(mux)
+	return s.securityHeaders(mux)
 }
 
 func main() {
