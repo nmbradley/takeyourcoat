@@ -10,7 +10,7 @@ one Docker container.
 | Topic         | Decision |
 |---------------|----------|
 | Placement     | Runs on the public VPS, same host as ipset/iptables. Jellyfin lives at home behind a WireGuard tunnel to that VPS. |
-| Container     | `network_mode: host`, `cap_drop: ALL`, `cap_add: NET_ADMIN`, read-only rootfs, `no-new-privileges`. Binary execs `/usr/sbin/ipset` from the image against the host kernel. |
+| Container     | `network_mode: host`, `cap_drop: ALL`, `cap_add: NET_ADMIN`, read-only rootfs, `no-new-privileges`. Runs as root inside the container because no-new-privileges blocks file capabilities on exec. Binary execs `ipset` from the image against the host kernel. |
 | Ingress       | Caddy on the VPS terminates TLS for `hello.mydomain.com` and proxies to the app on `127.0.0.1:8080`. App trusts `X-Forwarded-For` only from configured proxy addresses. |
 | Email         | SMTP with STARTTLS via `net/smtp` + `crypto/tls`. |
 | Config        | Environment variables first, optional JSON file second. Every key has a `TYC_` env var. Compose `environment:` block can configure everything with no file mounted. |
@@ -59,7 +59,7 @@ No cookies, no sessions, no database. The token is the only credential.
 - **Enumeration and timing**: same page and status for known and unknown emails. Mail is sent in a goroutine so response time does not reveal whether a send happened.
 - **Rate limiting**: per-email sliding window (default 3/hour) so the portal cannot be used to spam the trusted list. Requests for unknown emails do no work.
 - **HTTP hygiene**: `http.Server` with Read/Write/Idle timeouts, `MaxBytesReader` on forms, method checks, `html/template` for all output, `Cache-Control: no-store` on pages, `X-Content-Type-Options`, `Referrer-Policy: no-referrer`, CSP `default-src 'none'; style-src 'self'; form-action 'self'`. No inline styles, no scripts, no external requests from the browser. Listens on loopback only by default.
-- **Container**: non-root user; `setcap cap_net_admin+ep /usr/sbin/ipset` in the Dockerfile so only that binary gains the capability. Verify on the VPS that this works with Docker's bounding set; fallback is running as root with all other caps dropped.
+- **Container**: runs as root with every capability dropped except NET_ADMIN, read-only rootfs and no-new-privileges. A non-root user with setcap on ipset was rejected because no-new-privileges makes the kernel ignore file capabilities on exec.
 - **Secrets**: SMTP password arrives via env from a 0600 `.env` file, or via the JSON file. It is never logged and the config struct has no `String()` that could leak it. Logs record email and IP on success only.
 - **Refresh semantics**: `-exist` means re-verifying resets the 72h timer rather than erroring.
 
@@ -137,7 +137,7 @@ SHA-256 `61207a40ffc02a42d1e50143651c121beab70ed413c934c1ff84fa263ba436b0`.
 
 - `Dockerfile`: multi-stage. `golang:1.27-alpine` builds with
   `CGO_ENABLED=0 -trimpath -ldflags="-s -w"`. Runtime is `alpine:3.23`
-  with `apk add --no-cache ipset libcap`, `setcap` on ipset, non-root user.
+  with `apk add --no-cache ipset`, running as root with only NET_ADMIN.
   Image size: about 18 MB (alpine + ipset + libcap). Published as `ghcr.io/<you>/takeyourcoat`
   via a GitHub Actions workflow on tag push, so the VPS only pulls.
 - `docker-compose.yml`, complete and self-contained:

@@ -9,10 +9,11 @@ FROM alpine:3.23@sha256:85fe1e81d6758c208f3e1eed4338a1997e19d4be002d4dd32d3100c9
 LABEL org.opencontainers.image.source="https://github.com/nmbradley/takeyourcoat" \
       org.opencontainers.image.description="Captive portal that whitelists a household IPv4 in ipset" \
       org.opencontainers.image.licenses="MIT"
-RUN apk add --no-cache ipset libcap \
- && setcap cap_net_admin+ep /usr/sbin/ipset \
- && adduser -D -H -u 65532 -s /sbin/nologin tyc
+RUN apk add --no-cache ipset
 COPY --from=build /takeyourcoat /takeyourcoat
-USER tyc
+# Runs as root on purpose. The compose file drops every capability except
+# NET_ADMIN and sets no-new-privileges. Under that flag the kernel refuses to
+# grant capabilities on exec, so a non-root user plus setcap on ipset would
+# always fail with "Operation not permitted". Root holds NET_ADMIN directly.
 EXPOSE 8080
 ENTRYPOINT ["/takeyourcoat"]

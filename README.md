@@ -111,9 +111,11 @@ docker compose up -d
 ```
 
 The container uses `network_mode: host` so it can reach the host's ipset and
-listen on loopback, drops all capabilities except `NET_ADMIN`, and runs as a
-non-root user with a read-only filesystem. Only `/usr/sbin/ipset` inside the
-image carries the `cap_net_admin` file capability.
+listen on loopback, drops all capabilities except `NET_ADMIN`, sets
+`no-new-privileges`, and uses a read-only filesystem. The process runs as root
+inside the container on purpose: with `no-new-privileges` the kernel ignores
+file capabilities on exec, so a non-root user plus `setcap` on ipset would
+always fail. Root holds exactly one capability, `NET_ADMIN`, and nothing else.
 
 ## Security notes
 

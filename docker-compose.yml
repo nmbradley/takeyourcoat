@@ -1,7 +1,7 @@
 services:
   takeyourcoat:
     # Pin to a version tag or digest, never latest.
-    image: ghcr.io/nmbradley/takeyourcoat:v0.1.0
+    image: ghcr.io/nmbradley/takeyourcoat:0.1.0
     # Or build from source on the VPS instead of pulling:
     # build: .
     network_mode: host
