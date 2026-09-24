@@ -130,9 +130,13 @@ func (c *Config) validate() error {
 	bad := func(field, msg string) { errs = append(errs, fmt.Errorf("%s: %s", field, msg)) }
 	var emails []string
 	for _, e := range c.TrustedEmails {
-		if e = strings.ToLower(strings.TrimSpace(e)); e != "" {
-			emails = append(emails, e)
+		if e = strings.ToLower(strings.TrimSpace(e)); e == "" {
+			continue
 		}
+		if a, err := mail.ParseAddress(e); err != nil || a.Address != e {
+			bad("TYC_TRUSTED_EMAILS (trusted_emails)", "invalid address "+strconv.Quote(e))
+		}
+		emails = append(emails, e)
 	}
 	c.TrustedEmails = emails
 	c.proxies = nil
@@ -169,8 +173,8 @@ func (c *Config) validate() error {
 	if len(c.TrustedEmails) == 0 {
 		bad("TYC_TRUSTED_EMAILS (trusted_emails)", "required")
 	}
-	if u, err := url.Parse(c.PublicURL); c.PublicURL != "" && (err != nil || (u.Scheme != "https" && u.Scheme != "http") || u.Host == "") {
-		bad("TYC_PUBLIC_URL (public_url)", "must be an absolute http(s) URL")
+	if u, err := url.Parse(c.PublicURL); c.PublicURL != "" && (err != nil || u.Host == "" || (u.Scheme != "https" && !(u.Scheme == "http" && (u.Hostname() == "localhost" || u.Hostname() == "127.0.0.1")))) {
+		bad("TYC_PUBLIC_URL (public_url)", "must be an absolute https URL (http only for localhost)")
 	}
 	if _, err := mail.ParseAddress(c.SMTP.From); c.SMTP.From != "" && err != nil {
 		bad("TYC_SMTP_FROM (smtp.from)", "must be an email address")

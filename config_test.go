@@ -182,3 +182,28 @@ func TestLoadConfigStateFile(t *testing.T) {
 		t.Errorf("want error naming TYC_STATE_FILE, got %v", err)
 	}
 }
+
+func TestLoadConfigPublicURLMustBeHTTPS(t *testing.T) {
+	for url, ok := range map[string]bool{
+		"http://hello.example.com":  false,
+		"http://localhost:8080":     true,
+		"http://127.0.0.1:8080/":    true,
+		"https://hello.example.com": true,
+	} {
+		setRequiredEnv(t)
+		t.Setenv("TYC_PUBLIC_URL", url)
+		if _, err := loadConfig(); (err == nil) != ok || (err != nil && !strings.Contains(err.Error(), "TYC_PUBLIC_URL")) {
+			t.Errorf("%s: %v", url, err)
+		}
+	}
+}
+
+func TestLoadConfigTrustedEmailsMustBeBareAddresses(t *testing.T) {
+	for _, v := range []string{"alice", "Alice <alice@example.com>", "alice@example.com,@example.com"} {
+		setRequiredEnv(t)
+		t.Setenv("TYC_TRUSTED_EMAILS", v)
+		if _, err := loadConfig(); err == nil || !strings.Contains(err.Error(), "TYC_TRUSTED_EMAILS") {
+			t.Errorf("%q: want error naming TYC_TRUSTED_EMAILS, got %v", v, err)
+		}
+	}
+}

@@ -1,6 +1,7 @@
 package main
 
 import (
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"net/netip"
@@ -74,11 +75,12 @@ func TestIndexRendersFormWithSecurityHeaders(t *testing.T) {
 		t.Fatalf("index missing header: %s", w.Body)
 	}
 	for k, v := range map[string]string{
-		"Content-Security-Policy": "default-src 'none'; style-src 'self'; form-action 'self'",
-		"X-Content-Type-Options":  "nosniff",
-		"Referrer-Policy":         "no-referrer",
-		"Cache-Control":           "no-store",
-		"Content-Type":            "text/html; charset=utf-8",
+		"Content-Security-Policy":   "default-src 'none'; style-src 'self'; form-action 'self'; frame-ancestors 'none'; base-uri 'none'",
+		"Strict-Transport-Security": "max-age=31536000",
+		"X-Content-Type-Options":    "nosniff",
+		"Referrer-Policy":           "no-referrer",
+		"Cache-Control":             "no-store",
+		"Content-Type":              "text/html; charset=utf-8",
 	} {
 		if got := w.Header().Get(k); got != v {
 			t.Errorf("%s = %q, want %q", k, got, v)
@@ -198,7 +200,8 @@ func TestVerifyGetDoesNotConsume(t *testing.T) {
 	tok, _ := s.tokens.issue("alice@example.com")
 	for i := 0; i < 2; i++ {
 		w := do(h, "GET", "/verify?token="+tok, "", nil)
-		if w.Code != 200 || !strings.Contains(w.Body.String(), `name="token" value="`+tok+`"`) || !strings.Contains(w.Body.String(), `method="post"`) {
+		if w.Code != 200 || !strings.Contains(w.Body.String(), `name="token" value="`+tok+`"`) || !strings.Contains(w.Body.String(), `method="post"`) ||
+			!strings.Contains(w.Body.String(), "Only confirm from your home Wi-Fi") {
 			t.Fatalf("GET %d: %d %s", i, w.Code, w.Body)
 		}
 	}
@@ -216,6 +219,9 @@ func TestVerifyPostAddsOnceThenRejectsReuse(t *testing.T) {
 	w := do(h, "POST", "/verify", "203.0.113.5:4444", url.Values{"token": {tok}})
 	if w.Code != 200 || !strings.Contains(w.Body.String(), "203.0.113.5") {
 		t.Fatalf("first POST: %d %s", w.Code, w.Body)
+	}
+	if s.allow.m[netip.MustParseAddr("203.0.113.5")].Email != "alice@example.com" {
+		t.Errorf("entry not recorded for alice: %v", s.allow.m)
 	}
 	if w := do(h, "POST", "/verify", "203.0.113.5:4444", url.Values{"token": {tok}}); w.Code != 400 {
 		t.Errorf("reused token: %d", w.Code)
@@ -294,4 +300,74 @@ func TestCheckCIDRTrustedProxy(t *testing.T) {
 		t.Errorf("CIDR proxy not trusted: %d %s", w.Code, w.Body)
 	}
 	assertLocked(t, do(h, "GET", "/check", "172.29.0.7:4444", nil, "203.0.113.5"), "IPv6")
+}
+
+func mails(sent chan sentMail) int {
+	n := 0
+	for {
+		select {
+		case <-sent:
+			n++
+		case <-time.After(100 * time.Millisecond):
+			return n
+		}
+	}
+}
+
+func TestRequestLimitPerEmailAndIP(t *testing.T) {
+	_, h, sent := newTestServer(t)
+	for i := 0; i < 4; i++ {
+		do(h, "POST", "/request", "198.51.100.7:4444", url.Values{"email": {"alice@example.com"}})
+	}
+	do(h, "POST", "/request", "203.0.113.5:4444", url.Values{"email": {"alice@example.com"}})
+	if n := mails(sent); n != 4 {
+		t.Errorf("mails = %d, want 3 from the first IP and 1 from the second", n)
+	}
+}
+
+func TestRequestPerEmailCapAcrossIPs(t *testing.T) {
+	_, h, sent := newTestServer(t)
+	for i := 0; i < 5; i++ {
+		for j := 0; j < 3; j++ {
+			do(h, "POST", "/request", fmt.Sprintf("198.51.100.%d:4444", i+1), url.Values{"email": {"alice@example.com"}})
+		}
+	}
+	if n := mails(sent); n != 12 {
+		t.Errorf("mails = %d, want cap of 12", n)
+	}
+}
+
+func TestRequestFromBadIPDoesNoWork(t *testing.T) {
+	s, h, sent := newTestServer(t)
+	ok := do(h, "POST", "/request", "203.0.113.5:4444", url.Values{"email": {"mallory@example.com"}})
+	for _, remote := range []string{"[2001:db8::1]:4444", "10.0.0.5:4444"} {
+		w := do(h, "POST", "/request", remote, url.Values{"email": {"alice@example.com"}})
+		if w.Code != 200 || w.Body.String() != ok.Body.String() {
+			t.Errorf("%s: %d %s", remote, w.Code, w.Body)
+		}
+	}
+	if n := mails(sent); n != 0 || len(s.tokens.m) != 0 {
+		t.Errorf("bad IP did work: %d mails, %d tokens", n, len(s.tokens.m))
+	}
+}
+
+func TestVerifyPostSaveFailureKeepsToken(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("root ignores directory permissions")
+	}
+	s, h, _ := newTestServer(t)
+	dir := filepath.Dir(s.cfg.StateFile)
+	os.Chmod(dir, 0o500)
+	t.Cleanup(func() { os.Chmod(dir, 0o700) })
+	tok, _ := s.tokens.issue("alice@example.com")
+	if w := do(h, "POST", "/verify", "203.0.113.5:4444", url.Values{"token": {tok}}); w.Code != 500 {
+		t.Fatalf("save failure: %d %s", w.Code, w.Body)
+	}
+	if _, ok := s.tokens.peek(tok); !ok {
+		t.Fatal("failed save burned the token")
+	}
+	os.Chmod(dir, 0o700)
+	if w := do(h, "POST", "/verify", "203.0.113.5:4444", url.Values{"token": {tok}}); w.Code != 200 {
+		t.Errorf("retry: %d %s", w.Code, w.Body)
+	}
 }

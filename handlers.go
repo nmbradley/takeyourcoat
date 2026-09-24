@@ -31,7 +31,8 @@ type server struct {
 	cfg     *Config
 	allow   *allowlist
 	tokens  *tokenStore
-	limiter *limiter
+	limiter *limiter // per email and client IP
+	capper  *limiter // per email across all IPs, a spam cap
 	trusted map[string]bool
 	send    func(to, link string) error
 }
@@ -46,6 +47,7 @@ func newServer(cfg *Config, allow *allowlist, send func(to, link string) error) 
 		allow:   allow,
 		tokens:  newTokenStore(time.Duration(cfg.TokenTTL)),
 		limiter: newLimiter(cfg.RequestsPerEmailPerHour, time.Hour),
+		capper:  newLimiter(4*cfg.RequestsPerEmailPerHour, time.Hour),
 		trusted: trusted,
 		send:    send,
 	}
@@ -54,7 +56,8 @@ func newServer(cfg *Config, allow *allowlist, send func(to, link string) error) 
 func securityHeaders(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		h := w.Header()
-		h.Set("Content-Security-Policy", "default-src 'none'; style-src 'self'; form-action 'self'")
+		h.Set("Content-Security-Policy", "default-src 'none'; style-src 'self'; form-action 'self'; frame-ancestors 'none'; base-uri 'none'")
+		h.Set("Strict-Transport-Security", "max-age=31536000")
 		h.Set("X-Content-Type-Options", "nosniff")
 		h.Set("Referrer-Policy", "no-referrer")
 		h.Set("Cache-Control", "no-store")
@@ -104,7 +107,8 @@ func (s *server) handleRequest(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	email := strings.ToLower(strings.TrimSpace(r.PostForm.Get("email")))
-	if s.trusted[email] && s.limiter.allow(email) {
+	ip, ok := s.clientIP(r)
+	if ok && s.trusted[email] && s.limiter.allow(email+"|"+ip.String()) && s.capper.allow(email) {
 		if tok, err := s.tokens.issue(email); err != nil {
 			log.Printf("issue token: %v", err)
 		} else {
@@ -147,17 +151,25 @@ func (s *server) handleVerifyPost(w http.ResponseWriter, r *http.Request) {
 		render(w, http.StatusBadRequest, "error", badIPMessage)
 		return
 	}
-	email, ok := s.tokens.consume(r.PostForm.Get("token"))
+	// Consume only after the add is saved, so a failed save leaves the link usable.
+	tok := r.PostForm.Get("token")
+	email, ok := s.tokens.peek(tok)
 	if !ok {
 		render(w, http.StatusBadRequest, "error", "That link is invalid or has expired.")
 		return
 	}
-	if err := s.allow.add(ip); err != nil {
+	old, err := s.allow.add(ip, email)
+	if err != nil {
 		log.Printf("allowlist add %s: %v", ip, err)
 		render(w, http.StatusInternalServerError, "error", "Something went wrong unlocking your network. Please try again later.")
 		return
 	}
-	log.Printf("unlocked %s for %s", ip, email)
+	s.tokens.consume(tok)
+	if old.IsValid() {
+		log.Printf("unlocked %s for %s, replacing %s", ip, email, old)
+	} else {
+		log.Printf("unlocked %s for %s", ip, email)
+	}
 	render(w, http.StatusOK, "success", struct {
 		IP    netip.Addr
 		Hours int
