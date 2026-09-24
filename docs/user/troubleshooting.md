@@ -18,7 +18,7 @@ sudo docker compose logs --tail 100 takeyourcoat
 | "That link is invalid or has expired." | Link older than `TYC_TOKEN_TTL`, already used, or the app restarted | [Details](#that-link-is-invalid-or-has-expired) |
 | "This portal only works with public IPv4 addresses..." | Client came in over IPv6, or the app sees Caddy's address instead of the client's | [Details](#ipv6-or-private-address-error-page) |
 | Mail never arrives | Silent by design for unknown or rate-limited addresses; otherwise SMTP errors in the log | [Details](#mail-never-arrives) |
-| "Something went wrong unlocking your network" and `ipset add` errors in the log | Capability not effective, set missing, or set created without `timeout` | [Details](#ipset-add-permission-denied) |
+| "Something went wrong unlocking your network" and `ipset add` errors in the log | `NET_ADMIN` missing (compose file edited), set missing, or set created without `timeout` | [Details](#ipset-add-permission-denied) |
 | Everything worked until a reboot, now Jellyfin is open or `ipset add` fails | Set or rule not persisted, or restored in the wrong order | [Details](#set-disappears-after-reboot) |
 | Container exits immediately | Config validation failed | Read the `config:` line and see [Configuration](configuration.md#validation) |
 
@@ -133,57 +133,39 @@ unlocking your network."
 
 ### Why it happens
 
-The image runs the app as the non-root user `tyc`. Only `/usr/sbin/ipset`
-carries the file capability `cap_net_admin+ep`, so the app gains `NET_ADMIN`
-only for the duration of an `ipset` exec. Two conditions must both hold:
+The shipped setup already runs the app as root inside the container with
+exactly one capability, `NET_ADMIN`: the image has no `USER` line, and the
+compose file drops every other capability and sets `no-new-privileges`. ipset
+inherits `NET_ADMIN` from the app when it is executed. If ipset still reports
+a permission error (typically ending in
+`Kernel error received: Operation not permitted`), something has changed that
+setup. Check the service in your `docker-compose.yml`:
 
-1. `NET_ADMIN` is in the container's bounding set. `cap_add: [NET_ADMIN]` does
-   this. Without it, the exec itself fails, with an error like
-   `fork/exec /usr/sbin/ipset: operation not permitted`.
-2. The kernel honours file capabilities on exec. **`no-new-privileges:true`
-   turns this off**: with the `no_new_privs` flag set, `execve` never adds file
-   capabilities (see `prctl(2)`, `PR_SET_NO_NEW_PRIVS`). ipset then runs
-   without `NET_ADMIN` and the kernel refuses, typically ending in
-   `Kernel error received: Operation not permitted`.
+| Check | Why it matters |
+|-------|----------------|
+| `cap_add: [NET_ADMIN]` is present | With `cap_drop: [ALL]` and no `cap_add`, root in the container has no capabilities at all. |
+| `network_mode: host` is present | Without it, ipset works on the container's own network namespace, not the host's, so the host set is never touched (you usually see `The set with the given name does not exist`). |
+| There is **no** `user:` line | A non-root user starts with no capabilities, and `no-new-privileges` stops any file capability from granting them on exec. Remove the line. |
+| The image is the published one or built from the repository Dockerfile | A custom image with a `USER` line fails the same way as a `user:` line. |
+| The Docker daemon does not use `userns-remap` | With user namespace remapping, capabilities do not apply to the host network namespace. Add `userns_mode: host` to the service. |
 
-The shipped `docker-compose.yml` sets both `no-new-privileges:true` and a
-non-root user, so expect condition 2 to fail. Check on your host:
+Check on your host:
 
 ```sh
 cd /opt/takeyourcoat
-sudo docker compose exec takeyourcoat grep -E 'NoNewPrivs|CapBnd' /proc/self/status
+sudo docker compose exec takeyourcoat grep -E '^(Uid|CapEff|CapBnd|NoNewPrivs)' /proc/self/status
 sudo docker compose exec takeyourcoat ipset list -n
 ```
 
-`CapBnd: 0000000000001000` means only `NET_ADMIN` is in the bounding set
-(correct). `NoNewPrivs: 1` together with `Operation not permitted` from the
-second command confirms condition 2. When it works, the second command prints
-the host's set names, including `jellyfin_clients`.
+A correct container shows `Uid` of `0`, `CapEff: 0000000000001000` and
+`CapBnd: 0000000000001000` (`NET_ADMIN` only), and `NoNewPrivs: 1`. The second
+command then prints the host's set names, including `jellyfin_clients`.
 
-### Fixes
+After fixing the compose file, recreate the container and repeat the check:
 
-Pick one, then `sudo docker compose up -d` and repeat the `ipset list -n` check.
-
-**Option A: run as root with only `NET_ADMIN`** (the fallback planned for this
-project). Add to the service:
-
-```yaml
-    user: "0:0"
+```sh
+sudo docker compose up -d --force-recreate
 ```
-
-Keep `cap_drop: [ALL]`, `cap_add: [NET_ADMIN]`, `read_only: true` and
-`no-new-privileges:true`. Trade-off: the long-running Go process itself now
-holds `NET_ADMIN` on the host network namespace, not just the `ipset` binary.
-
-**Option B: stay non-root and drop `no-new-privileges`.** Remove the line:
-
-```yaml
-    security_opt: [no-new-privileges:true]
-```
-
-Trade-off: setuid binaries inside the image could gain privileges, but the
-bounding set still limits every process in the container to `NET_ADMIN`, the
-root filesystem is read-only, and the Go process holds no capabilities.
 
 ### Other `ipset add` errors
 

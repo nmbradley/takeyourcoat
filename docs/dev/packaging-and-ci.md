@@ -14,11 +14,12 @@ RUN CGO_ENABLED=0 go build -trimpath -ldflags="-s -w" -o /takeyourcoat .
 # alpine:3.23
 FROM alpine:3.23@sha256:85fe1e81...
 LABEL org.opencontainers.image.source=... description=... licenses="MIT"
-RUN apk add --no-cache ipset libcap \
- && setcap cap_net_admin+ep /usr/sbin/ipset \
- && adduser -D -H -u 65532 -s /sbin/nologin tyc
+RUN apk add --no-cache ipset
 COPY --from=build /takeyourcoat /takeyourcoat
-USER tyc
+# Runs as root on purpose. The compose file drops every capability except
+# NET_ADMIN and sets no-new-privileges. Under that flag the kernel refuses to
+# grant capabilities on exec, so a non-root user plus setcap on ipset would
+# always fail with "Operation not permitted". Root holds NET_ADMIN directly.
 EXPOSE 8080
 ENTRYPOINT ["/takeyourcoat"]
 ```
@@ -41,35 +42,38 @@ ENTRYPOINT ["/takeyourcoat"]
 |------|-----|
 | `alpine:3.23@sha256:...` | Small base that ships an `ipset` package. Pinned by digest. |
 | `LABEL org.opencontainers.image.*` | Source repository, description and licence, so GHCR links the package to the repo. |
-| `apk add --no-cache ipset libcap` | `ipset` is the only command the app runs. `libcap` provides `setcap`. |
-| `setcap cap_net_admin+ep /usr/sbin/ipset` | Grants `NET_ADMIN` to this one binary as a file capability (permitted and effective on exec). The app process itself runs with no capabilities and gains `NET_ADMIN` only inside the `ipset` child. |
-| `adduser -D -H -u 65532 -s /sbin/nologin tyc` | Non-root user with no password, no home directory and no login shell. UID 65532 is the conventional "nonroot" UID used by distroless images. |
+| `apk add --no-cache ipset` | `ipset` is the only command the app runs. Nothing else is installed. |
 | `COPY --from=build /takeyourcoat /takeyourcoat` | Only the binary crosses stages; no Go toolchain or source in the final image. |
-| `USER tyc` | Runs as the non-root user. |
+| (no `USER` line) | The process runs as root inside the container on purpose; see below. The comment in the Dockerfile records why. |
 | `EXPOSE 8080` | Documentation only; under `network_mode: host` it has no effect. |
 | `ENTRYPOINT ["/takeyourcoat"]` | Exec form, so the binary is PID 1 and receives SIGTERM directly for graceful shutdown. |
 
-### Why setcap and a non-root user
+### Why root with one capability
 
-The container must hold `NET_ADMIN` in its bounding set for ipset to work,
-but the long-running, network-facing Go process does not need it. A file
-capability on `/usr/sbin/ipset` confines the privilege to the one binary
-whose argv the app controls (see
-[security design](security-design.md#fixed-argv-exec-no-shell)). The root
-filesystem is read-only at run time, so nothing can replace that binary.
+ipset needs `NET_ADMIN`. The compose file sets `cap_drop: [ALL]`,
+`cap_add: [NET_ADMIN]` and `no-new-privileges:true`. Under `no_new_privs` the
+kernel never adds capabilities on `execve`, so the usual pattern of a non-root
+user plus `setcap cap_net_admin+ep` on `/usr/sbin/ipset` cannot work: ipset
+would run without the capability and fail with "Operation not permitted".
 
-**Caveat.** File capabilities are not applied on exec when the process has
-`no_new_privs` set, which `security_opt: [no-new-privileges:true]` in the
-shipped compose file does. The plan flagged this combination as "verify on the
-VPS" with running as root (all other capabilities dropped) as the fallback.
-The operator-side diagnosis and both workarounds are in
-[troubleshooting](../user/troubleshooting.md#ipset-add-permission-denied).
+So the image has no `USER` line. Root in this container holds exactly one
+capability. Verified inside the running container: `/proc/self/status` shows
+`Uid` 0 with `CapEff` and `CapBnd` both `0000000000001000`
+(`CAP_NET_ADMIN` only). ipset, executed by the app, inherits `NET_ADMIN`
+directly. Without `CAP_DAC_OVERRIDE` and the rest, this root cannot bypass file
+permissions, load modules, change ownership or bind privileged ports.
+
+The trade-off, compared with a working setcap design, is that the Go process
+itself holds `NET_ADMIN`, not only the ipset child. That is accepted and
+recorded in [decisions](decisions.md#11-root-in-the-container-rather-than-non-root-plus-setcap).
+The root filesystem is read-only at run time, so nothing can replace the
+ipset binary, and the app only ever runs it with a fixed argv (see
+[security design](security-design.md#fixed-argv-exec-no-shell)).
 
 ### Image size
 
-The final image is the Alpine base plus `ipset`, `libcap` (and their
-libraries) and one stripped static binary. The plan estimated about 18 MB; it
-has not been re-measured for these docs. Check a local build with:
+The final image is the Alpine base plus `ipset` (and its libraries) and one
+stripped static binary: about 18 MB. Check a local build with:
 
 ```sh
 docker build -t takeyourcoat:dev .
@@ -153,10 +157,10 @@ For tag `v0.2.0`, `metadata-action` produces:
 | `0.2` | `type=semver,pattern={{major}}.{{minor}}` |
 | `latest` | `type=raw,value=latest` |
 
-The `docker-compose.yml` in the repository references `:v0.1.0`, which this
-tagging scheme does not produce; operators should use `0.1.0`
-([deployment](../user/deployment.md#pinning-the-image)). Tags that are not valid
-semver after the `v` produce no version tags.
+Git tags keep the `v`; image tags drop it, so git tag `v0.1.0` is image
+`0.1.0`, which is what the repository's `docker-compose.yml` pins
+([deployment](../user/deployment.md#pinning-the-image)). Tags that are not
+valid semver after the `v` produce no version tags.
 
 To find the digest to give operators:
 

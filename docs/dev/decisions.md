@@ -124,3 +124,27 @@ latest stdlib security fixes and `govulncheck` in CI stays clean.
 
 **Consequence.** Contributors and Dependabot must keep the `go` directive and
 the Docker base image on a supported Go release.
+
+## 11. Root in the container rather than non-root plus setcap
+
+**Decision.** The image has no `USER` line; the app runs as root inside the
+container. The compose file drops every capability except `NET_ADMIN` and sets
+`no-new-privileges`, so root holds exactly `NET_ADMIN` (`CapEff` and `CapBnd`
+both `0x1000`).
+
+**Rejected.** A non-root user with `setcap cap_net_admin+ep` on
+`/usr/sbin/ipset`, which was the original plan. Under `no-new-privileges` the
+kernel refuses to grant capabilities on exec, so ipset would always fail with
+"Operation not permitted". Keeping setcap would have meant dropping
+`no-new-privileges` instead.
+
+**Why this way round.** `no-new-privileges` closes every exec-time escalation
+path (setuid binaries, file capabilities) for the life of the container.
+Root without `CAP_DAC_OVERRIDE` and the other capabilities is not
+meaningfully stronger than a non-root user, except for the one capability it
+needs.
+
+**Consequences.** The Go process itself holds `NET_ADMIN` in the host network
+namespace, not only the ipset child. Operators must not add a `user:` line to
+the compose file; doing so breaks every unlock
+([troubleshooting](../user/troubleshooting.md#ipset-add-permission-denied)).

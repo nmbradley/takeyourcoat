@@ -14,7 +14,7 @@ one in the repository uses placeholders.
 services:
   takeyourcoat:
     # Pin to a version tag or digest, never latest.
-    image: ghcr.io/nmbradley/takeyourcoat:v0.1.0
+    image: ghcr.io/nmbradley/takeyourcoat:0.1.0
     # Or build from source on the VPS instead of pulling:
     # build: .
     network_mode: host
@@ -42,7 +42,7 @@ services:
 | `cap_drop: [ALL]` | Starts from zero Linux capabilities. |
 | `cap_add: [NET_ADMIN]` | The one capability `ipset add` needs. Nothing else is granted, so the container cannot, for example, bind privileged ports, change file ownership or load kernel modules. |
 | `read_only: true` | The root filesystem is read-only. The app writes nothing to disk, and nobody can drop a replacement `ipset` binary into the image at run time. |
-| `security_opt: [no-new-privileges:true]` | Blocks gaining privileges through setuid binaries. **Note:** it also stops the image's file capability on `/usr/sbin/ipset` from taking effect for the non-root user. See [the troubleshooting entry](troubleshooting.md#ipset-add-permission-denied) before your first deploy. |
+| `security_opt: [no-new-privileges:true]` | No process in the container can gain privileges on exec, through setuid binaries or file capabilities. The app already holds everything it will ever get: `NET_ADMIN`. |
 | `restart: unless-stopped` | Comes back after crashes and reboots. |
 | `environment:` | The whole configuration. See [Configuration](configuration.md). |
 | `TYC_SMTP_PASSWORD: ${TYC_SMTP_PASSWORD}` | Interpolated by Compose from `.env` so the secret is not in the compose file. |
@@ -51,7 +51,14 @@ Settings not listed use their defaults: listen on `127.0.0.1:8080`, trust
 `127.0.0.1` and `::1` as proxies, 15 minute links, 3 links per email per hour,
 SMTP port 587.
 
-Inside the image the app runs as the non-root user `tyc` (UID 65532).
+The app runs as **root inside the container, on purpose**. With
+`no-new-privileges` the kernel ignores file capabilities on exec, so a
+non-root user plus `setcap` on ipset could never gain `NET_ADMIN`. Root here
+holds exactly one capability: inside the container `/proc/self/status` shows
+`Uid` 0 with `CapEff` and `CapBnd` both `0000000000001000` (`NET_ADMIN` only).
+It cannot bypass file permissions, load modules or use any other capability.
+Do not add a `user:` line; see
+[Troubleshooting](troubleshooting.md#ipset-add-permission-denied).
 `EXPOSE 8080` in the Dockerfile has no effect under host networking.
 
 ## The `.env` file
@@ -117,9 +124,9 @@ pushed. The release workflow produces these tags for git tag `v0.1.0`:
 | `0.1` | Yes, follows the latest `0.1.x` |
 | `latest` | Yes, follows every release |
 
-The version tags have no leading `v` (the workflow uses the semver
-`{{version}}` pattern), while the sample compose file says `:v0.1.0`. Use the
-tag that actually exists on the registry.
+Git tags keep the leading `v` (`v0.1.0`); image tags do not (`0.1.0`),
+because the workflow uses the semver `{{version}}` pattern. The sample compose
+file pins `:0.1.0`.
 
 - **Pin a full version** (`:0.1.0`) at minimum. Never use `latest` or `0.1`.
 - **Better, pin the digest**, which cannot be re-pointed even if the tag is:

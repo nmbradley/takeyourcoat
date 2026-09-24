@@ -88,8 +88,14 @@ point `TYC_CONFIG` at it:
       - ./config.json:/etc/takeyourcoat/config.json:ro
 ```
 
-The container runs as UID 65532, so the file must be readable by that UID.
-If it holds the password, make it `chmod 600` and `chown 65532` it on the host.
+The app runs as root in the container but with every capability except
+`NET_ADMIN` dropped, so it cannot bypass file permissions. Keep the file owned
+by root and readable only by its owner:
+
+```sh
+sudo chown root:root /opt/takeyourcoat/config.json
+sudo chmod 600 /opt/takeyourcoat/config.json
+```
 
 ## Validation
 
