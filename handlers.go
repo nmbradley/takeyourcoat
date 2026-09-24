@@ -19,7 +19,7 @@ var templateFS embed.FS
 // that page's "body" definition. Executing the set renders the layout.
 var pages = func() map[string]*template.Template {
 	m := map[string]*template.Template{}
-	for _, name := range []string{"index", "sent", "confirm", "success", "error"} {
+	for _, name := range []string{"index", "sent", "confirm", "success", "error", "locked"} {
 		m[name] = template.Must(template.ParseFS(templateFS, "templates/layout.html", "templates/"+name+".html"))
 	}
 	return m
@@ -29,19 +29,21 @@ const badIPMessage = "This portal only works with public IPv4 addresses. Your co
 
 type server struct {
 	cfg     *Config
+	allow   *allowlist
 	tokens  *tokenStore
 	limiter *limiter
 	trusted map[string]bool
 	send    func(to, link string) error
 }
 
-func newServer(cfg *Config, send func(to, link string) error) *server {
+func newServer(cfg *Config, allow *allowlist, send func(to, link string) error) *server {
 	trusted := map[string]bool{}
 	for _, e := range cfg.TrustedEmails {
 		trusted[e] = true
 	}
 	return &server{
 		cfg:     cfg,
+		allow:   allow,
 		tokens:  newTokenStore(time.Duration(cfg.TokenTTL)),
 		limiter: newLimiter(cfg.RequestsPerEmailPerHour, time.Hour),
 		trusted: trusted,
@@ -81,7 +83,7 @@ func (s *server) clientIP(r *http.Request) (ip netip.Addr, ok bool) {
 		return netip.Addr{}, false
 	}
 	ip = ap.Addr().Unmap()
-	if xff := r.Header.Values("X-Forwarded-For"); len(xff) > 0 && slices.Contains(s.cfg.proxies, ip) {
+	if xff := r.Header.Values("X-Forwarded-For"); len(xff) > 0 && slices.ContainsFunc(s.cfg.proxies, func(p netip.Prefix) bool { return p.Contains(ip) }) {
 		hops := strings.Split(xff[len(xff)-1], ",")
 		if ip, err = netip.ParseAddr(strings.TrimSpace(hops[len(hops)-1])); err != nil {
 			return netip.Addr{}, false
@@ -150,15 +152,29 @@ func (s *server) handleVerifyPost(w http.ResponseWriter, r *http.Request) {
 		render(w, http.StatusBadRequest, "error", "That link is invalid or has expired.")
 		return
 	}
-	ttl := time.Duration(s.cfg.WhitelistTTL)
-	if err := ipsetAdd(s.cfg.IpsetName, ip, ttl); err != nil {
-		log.Printf("ipset add %s: %v", ip, err)
+	if err := s.allow.add(ip); err != nil {
+		log.Printf("allowlist add %s: %v", ip, err)
 		render(w, http.StatusInternalServerError, "error", "Something went wrong unlocking your network. Please try again later.")
 		return
 	}
-	log.Printf("whitelisted %s for %s", ip, email)
+	log.Printf("unlocked %s for %s", ip, email)
 	render(w, http.StatusOK, "success", struct {
 		IP    netip.Addr
 		Hours int
-	}{ip, int(ttl.Hours())})
+	}{ip, int(time.Duration(s.cfg.WhitelistTTL).Hours())})
+}
+
+// handleCheck is Caddy's forward_auth target: 200 if the caller's IP is
+// unlocked, otherwise 403 with the locked page, which Caddy passes through.
+func (s *server) handleCheck(w http.ResponseWriter, r *http.Request) {
+	msg := "This network is not unlocked. Open the portal from a device on this network to unlock it."
+	ip, ok := s.clientIP(r)
+	if !ok {
+		msg = badIPMessage
+	} else if s.allow.allowed(ip) {
+		w.Header().Set("Content-Type", "text/plain")
+		w.Write([]byte("ok"))
+		return
+	}
+	render(w, http.StatusForbidden, "locked", struct{ Message, PublicURL string }{msg, s.cfg.PublicURL})
 }

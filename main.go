@@ -21,6 +21,7 @@ func (s *server) routes() http.Handler {
 	mux.HandleFunc("POST /request", s.handleRequest)
 	mux.HandleFunc("GET /verify", s.handleVerifyGet)
 	mux.HandleFunc("POST /verify", s.handleVerifyPost)
+	mux.HandleFunc("GET /check", s.handleCheck)
 	files := http.FileServerFS(staticFS)
 	mux.HandleFunc("GET /static/", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Cache-Control", "public, max-age=31536000, immutable")
@@ -34,7 +35,11 @@ func main() {
 	if err != nil {
 		log.Fatalf("config: %v", err)
 	}
-	s := newServer(cfg, func(to, link string) error { return sendMagicLink(cfg.SMTP, to, link) })
+	allow, err := newAllowlist(cfg.StateFile, time.Duration(cfg.WhitelistTTL))
+	if err != nil {
+		log.Fatalf("allowlist: %v", err)
+	}
+	s := newServer(cfg, allow, func(to, link string) error { return sendMagicLink(cfg.SMTP, to, link) })
 	srv := &http.Server{
 		Addr:              cfg.Listen,
 		Handler:           s.routes(),

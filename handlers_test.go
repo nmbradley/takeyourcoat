@@ -5,6 +5,8 @@ import (
 	"net/http/httptest"
 	"net/netip"
 	"net/url"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -12,19 +14,28 @@ import (
 
 type sentMail struct{ to, link string }
 
-func newTestServer(t *testing.T) (*server, http.Handler, chan sentMail) {
+func newTestServer(t *testing.T, proxies ...string) (*server, http.Handler, chan sentMail) {
 	t.Helper()
+	if proxies == nil {
+		proxies = []string{"127.0.0.1/32", "::1/128"}
+	}
 	cfg := &Config{
 		PublicURL:               "https://hello.example.com/",
 		TrustedEmails:           []string{"alice@example.com"},
-		proxies:                 []netip.Addr{netip.MustParseAddr("127.0.0.1"), netip.MustParseAddr("::1")},
-		IpsetName:               "jellyfin_clients",
+		StateFile:               filepath.Join(t.TempDir(), "allowlist.json"),
 		WhitelistTTL:            Duration(72 * time.Hour),
 		TokenTTL:                Duration(15 * time.Minute),
 		RequestsPerEmailPerHour: 3,
 	}
+	for _, p := range proxies {
+		cfg.proxies = append(cfg.proxies, netip.MustParsePrefix(p))
+	}
+	allow, err := newAllowlist(cfg.StateFile, time.Duration(cfg.WhitelistTTL))
+	if err != nil {
+		t.Fatal(err)
+	}
 	sent := make(chan sentMail, 10)
-	s := newServer(cfg, func(to, link string) error {
+	s := newServer(cfg, allow, func(to, link string) error {
 		sent <- sentMail{to, link}
 		return nil
 	})
@@ -155,7 +166,6 @@ func TestVerifyXFFLastHopHonouredFromTrustedProxy(t *testing.T) {
 func TestVerifyRejectsIPv6AndPrivate(t *testing.T) {
 	s, h, _ := newTestServer(t)
 	tok, _ := s.tokens.issue("alice@example.com")
-	calls := fakeIpset(t)
 	for _, tc := range []struct{ remote, xff string }{
 		{"[2001:db8::1]:4444", ""},
 		{"10.0.0.5:4444", ""},
@@ -175,8 +185,8 @@ func TestVerifyRejectsIPv6AndPrivate(t *testing.T) {
 			}
 		}
 	}
-	if len(*calls) != 0 {
-		t.Errorf("ipset called: %q", *calls)
+	if len(s.allow.m) != 0 {
+		t.Errorf("allowlist changed: %v", s.allow.m)
 	}
 	if _, ok := s.tokens.peek(tok); !ok {
 		t.Error("rejected IP consumed the token")
@@ -202,7 +212,6 @@ func TestVerifyGetDoesNotConsume(t *testing.T) {
 
 func TestVerifyPostAddsOnceThenRejectsReuse(t *testing.T) {
 	s, h, _ := newTestServer(t)
-	calls := fakeIpset(t)
 	tok, _ := s.tokens.issue("alice@example.com")
 	w := do(h, "POST", "/verify", "203.0.113.5:4444", url.Values{"token": {tok}})
 	if w.Code != 200 || !strings.Contains(w.Body.String(), "203.0.113.5") {
@@ -211,9 +220,9 @@ func TestVerifyPostAddsOnceThenRejectsReuse(t *testing.T) {
 	if w := do(h, "POST", "/verify", "203.0.113.5:4444", url.Values{"token": {tok}}); w.Code != 400 {
 		t.Errorf("reused token: %d", w.Code)
 	}
-	want := "add jellyfin_clients 203.0.113.5 timeout 259200 -exist"
-	if len(*calls) != 1 || strings.Join((*calls)[0], " ") != want {
-		t.Errorf("ipset calls = %q, want one %q", *calls, want)
+	b, err := os.ReadFile(s.cfg.StateFile)
+	if err != nil || !strings.Contains(string(b), `"203.0.113.5":`) {
+		t.Errorf("state file = %s, %v", b, err)
 	}
 }
 
@@ -231,4 +240,58 @@ func TestStaticCSS(t *testing.T) {
 	if w.Header().Get("X-Content-Type-Options") != "nosniff" {
 		t.Error("security headers missing on static")
 	}
+}
+
+func unlock(t *testing.T, s *server, h http.Handler, remote string, xff ...string) {
+	t.Helper()
+	tok, _ := s.tokens.issue("alice@example.com")
+	if w := do(h, "POST", "/verify", remote, url.Values{"token": {tok}}, xff...); w.Code != 200 {
+		t.Fatalf("verify: %d %s", w.Code, w.Body)
+	}
+}
+
+func assertLocked(t *testing.T, w *httptest.ResponseRecorder, msg string) {
+	t.Helper()
+	body := w.Body.String()
+	if w.Code != 403 || !strings.Contains(body, msg) || !strings.Contains(body, `href="https://hello.example.com/"`) ||
+		!strings.HasPrefix(body, "<!doctype html>") {
+		t.Errorf("want locked page: %d %s", w.Code, body)
+	}
+}
+
+func TestCheckLockedUntilVerified(t *testing.T) {
+	s, h, _ := newTestServer(t)
+	assertLocked(t, do(h, "GET", "/check", "203.0.113.5:4444", nil), "This network is not unlocked.")
+	unlock(t, s, h, "203.0.113.5:4444")
+	w := do(h, "GET", "/check", "203.0.113.5:5555", nil)
+	if w.Code != 200 || w.Body.String() != "ok" || w.Header().Get("Content-Type") != "text/plain" {
+		t.Errorf("unlocked check: %d %q %q", w.Code, w.Body, w.Header().Get("Content-Type"))
+	}
+	assertLocked(t, do(h, "GET", "/check", "198.51.100.7:4444", nil), "This network is not unlocked.")
+}
+
+func TestCheckViaTrustedProxy(t *testing.T) {
+	s, h, _ := newTestServer(t)
+	unlock(t, s, h, "127.0.0.1:4444", "203.0.113.5")
+	if w := do(h, "GET", "/check", "127.0.0.1:4444", nil, "203.0.113.5"); w.Code != 200 {
+		t.Errorf("forwarded unlocked IP: %d %s", w.Code, w.Body)
+	}
+	for _, xff := range []string{"2001:db8::1", "192.168.1.20", "garbage"} {
+		assertLocked(t, do(h, "GET", "/check", "127.0.0.1:4444", nil, xff), "IPv6")
+	}
+}
+
+func TestCheckXFFIgnoredFromUntrustedRemote(t *testing.T) {
+	s, h, _ := newTestServer(t)
+	unlock(t, s, h, "203.0.113.5:4444")
+	assertLocked(t, do(h, "GET", "/check", "198.51.100.7:4444", nil, "203.0.113.5"), "This network is not unlocked.")
+}
+
+func TestCheckCIDRTrustedProxy(t *testing.T) {
+	s, h, _ := newTestServer(t, "172.28.0.0/24")
+	unlock(t, s, h, "172.28.0.3:4444", "203.0.113.5")
+	if w := do(h, "GET", "/check", "172.28.0.7:4444", nil, "203.0.113.5"); w.Code != 200 {
+		t.Errorf("CIDR proxy not trusted: %d %s", w.Code, w.Body)
+	}
+	assertLocked(t, do(h, "GET", "/check", "172.29.0.7:4444", nil, "203.0.113.5"), "IPv6")
 }

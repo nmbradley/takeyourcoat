@@ -42,20 +42,23 @@ type Config struct {
 	PublicURL               string     `json:"public_url"`
 	TrustedProxies          []string   `json:"trusted_proxies"`
 	TrustedEmails           []string   `json:"trusted_emails"`
-	IpsetName               string     `json:"ipset_name"`
+	StateFile               string     `json:"state_file"`
 	WhitelistTTL            Duration   `json:"whitelist_ttl"`
 	TokenTTL                Duration   `json:"token_ttl"`
 	RequestsPerEmailPerHour int        `json:"requests_per_email_per_hour"`
 	SMTP                    SMTPConfig `json:"smtp"`
 
-	proxies []netip.Addr
+	proxies []netip.Prefix
 }
 
 func loadConfig() (*Config, error) {
+	if _, ok := os.LookupEnv("TYC_IPSET_NAME"); ok {
+		return nil, errors.New("TYC_IPSET_NAME: no longer used; v0.2 gates via Caddy forward_auth, see README")
+	}
 	cfg := &Config{
 		Listen:                  "127.0.0.1:8080",
 		TrustedProxies:          []string{"127.0.0.1", "::1"},
-		IpsetName:               "jellyfin_clients",
+		StateFile:               "/data/allowlist.json",
 		WhitelistTTL:            Duration(72 * time.Hour),
 		TokenTTL:                Duration(15 * time.Minute),
 		RequestsPerEmailPerHour: 3,
@@ -110,7 +113,7 @@ func applyEnv(c *Config) error {
 	str("TYC_PUBLIC_URL", &c.PublicURL)
 	list("TYC_TRUSTED_PROXIES", &c.TrustedProxies)
 	list("TYC_TRUSTED_EMAILS", &c.TrustedEmails)
-	str("TYC_IPSET_NAME", &c.IpsetName)
+	str("TYC_STATE_FILE", &c.StateFile)
 	dur("TYC_WHITELIST_TTL", &c.WhitelistTTL)
 	dur("TYC_TOKEN_TTL", &c.TokenTTL)
 	num("TYC_REQUESTS_PER_EMAIL_PER_HOUR", &c.RequestsPerEmailPerHour)
@@ -137,11 +140,17 @@ func (c *Config) validate() error {
 		if p = strings.TrimSpace(p); p == "" {
 			continue
 		}
-		ip, err := netip.ParseAddr(p)
-		if err != nil {
-			bad("TYC_TRUSTED_PROXIES (trusted_proxies)", "invalid address "+strconv.Quote(p))
+		if ip, err := netip.ParseAddr(p); err == nil {
+			ip = ip.Unmap()
+			c.proxies = append(c.proxies, netip.PrefixFrom(ip, ip.BitLen()))
+			continue
 		}
-		c.proxies = append(c.proxies, ip.Unmap())
+		pfx, err := netip.ParsePrefix(p)
+		if err != nil {
+			bad("TYC_TRUSTED_PROXIES (trusted_proxies)", "invalid address or CIDR "+strconv.Quote(p))
+			continue
+		}
+		c.proxies = append(c.proxies, pfx.Masked())
 	}
 	required := map[string]string{
 		"TYC_PUBLIC_URL (public_url)":       c.PublicURL,
@@ -150,7 +159,7 @@ func (c *Config) validate() error {
 		"TYC_SMTP_PASSWORD (smtp.password)": c.SMTP.Password,
 		"TYC_SMTP_FROM (smtp.from)":         c.SMTP.From,
 		"TYC_LISTEN (listen)":               c.Listen,
-		"TYC_IPSET_NAME (ipset_name)":       c.IpsetName,
+		"TYC_STATE_FILE (state_file)":       c.StateFile,
 	}
 	for field, v := range required {
 		if v == "" {

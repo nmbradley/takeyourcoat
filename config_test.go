@@ -1,8 +1,10 @@
 package main
 
 import (
+	"net/netip"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -10,7 +12,7 @@ import (
 
 var envKeys = []string{
 	"TYC_CONFIG", "TYC_LISTEN", "TYC_PUBLIC_URL", "TYC_TRUSTED_PROXIES", "TYC_TRUSTED_EMAILS",
-	"TYC_IPSET_NAME", "TYC_WHITELIST_TTL", "TYC_TOKEN_TTL", "TYC_REQUESTS_PER_EMAIL_PER_HOUR",
+	"TYC_IPSET_NAME", "TYC_STATE_FILE", "TYC_WHITELIST_TTL", "TYC_TOKEN_TTL", "TYC_REQUESTS_PER_EMAIL_PER_HOUR",
 	"TYC_SMTP_HOST", "TYC_SMTP_PORT", "TYC_SMTP_USERNAME", "TYC_SMTP_PASSWORD", "TYC_SMTP_FROM",
 }
 
@@ -55,7 +57,7 @@ func TestLoadConfigEnvOnly(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if cfg.Listen != "127.0.0.1:8080" || cfg.IpsetName != "jellyfin_clients" || cfg.SMTP.Port != 587 ||
+	if cfg.Listen != "127.0.0.1:8080" || cfg.StateFile != "/data/allowlist.json" || cfg.SMTP.Port != 587 ||
 		cfg.RequestsPerEmailPerHour != 3 || time.Duration(cfg.WhitelistTTL) != 72*time.Hour ||
 		time.Duration(cfg.TokenTTL) != 15*time.Minute {
 		t.Errorf("defaults not applied: %+v", cfg)
@@ -139,5 +141,44 @@ func TestLoadConfigMalformedValues(t *testing.T) {
 				t.Errorf("want error naming %s, got %v", key, err)
 			}
 		})
+	}
+}
+
+func TestLoadConfigTrustedProxiesCIDRAndBare(t *testing.T) {
+	setRequiredEnv(t)
+	t.Setenv("TYC_TRUSTED_PROXIES", "172.28.0.0/24, 10.0.0.1 ,::1")
+	cfg, err := loadConfig()
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []netip.Prefix{netip.MustParsePrefix("172.28.0.0/24"), netip.MustParsePrefix("10.0.0.1/32"), netip.MustParsePrefix("::1/128")}
+	if !slices.Equal(cfg.proxies, want) {
+		t.Errorf("proxies = %v, want %v", cfg.proxies, want)
+	}
+	t.Setenv("TYC_TRUSTED_PROXIES", "172.28.0.0/33")
+	if _, err := loadConfig(); err == nil || !strings.Contains(err.Error(), "TYC_TRUSTED_PROXIES") {
+		t.Errorf("want error naming TYC_TRUSTED_PROXIES, got %v", err)
+	}
+}
+
+func TestLoadConfigIpsetNameRejected(t *testing.T) {
+	setRequiredEnv(t)
+	t.Setenv("TYC_IPSET_NAME", "")
+	_, err := loadConfig()
+	if err == nil || err.Error() != "TYC_IPSET_NAME: no longer used; v0.2 gates via Caddy forward_auth, see README" {
+		t.Errorf("got %v", err)
+	}
+}
+
+func TestLoadConfigStateFile(t *testing.T) {
+	setRequiredEnv(t)
+	t.Setenv("TYC_STATE_FILE", "/tmp/x/state.json")
+	cfg, err := loadConfig()
+	if err != nil || cfg.StateFile != "/tmp/x/state.json" {
+		t.Errorf("override: %v %+v", err, cfg)
+	}
+	t.Setenv("TYC_STATE_FILE", "")
+	if _, err := loadConfig(); err == nil || !strings.Contains(err.Error(), "TYC_STATE_FILE") {
+		t.Errorf("want error naming TYC_STATE_FILE, got %v", err)
 	}
 }
