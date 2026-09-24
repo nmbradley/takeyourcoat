@@ -121,8 +121,9 @@ is the whole API surface:
 | `mail.go`     | `sendMagicLink` — STARTTLS dial, `smtp.PlainAuth`, plain-text body |
 | `ipset.go`    | `ipsetAdd` — a package-level `var runIpset = exec.Command…` so tests substitute a fake |
 
-HTML lives as `html/template` string constants in `handlers.go`; four
-short pages sharing one layout template, no JavaScript. Styling comes
+HTML lives in `templates/` as embedded `html/template` files: `layout.html`
+plus one `{{define "body"}}` file per page, parsed per page with
+`template.ParseFS`. Five short pages sharing one layout, no JavaScript. Styling comes
 from Pico CSS classless, so the markup is plain semantic HTML
 (`main`, `article`, `form`, `label`, `input`, `button`) with no classes.
 

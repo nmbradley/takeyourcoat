@@ -97,6 +97,9 @@ Mail is sent over SMTP with STARTTLS on port 587.
 - **Amazon SES**: host `email-smtp.<region>.amazonaws.com`, username and
   password are SES SMTP credentials (not IAM access keys). `TYC_SMTP_FROM`
   must be a verified identity.
+- **Resend**: host `smtp.resend.com`, username is the literal word `resend`,
+  password is an API key scoped to sending. `TYC_SMTP_FROM` must be on a
+  domain verified in the Resend dashboard.
 
 ## Deployment
 

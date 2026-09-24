@@ -54,6 +54,12 @@ written to Caddy's access log. See [Security model](security-model.md).
 
 ## WireGuard sketch
 
+Pick a tunnel range that does not overlap the VPS's own network. Oracle Cloud
+VCNs default to `10.0.0.0/16` with the gateway at `10.0.0.1`, so a tunnel on
+`10.0.0.0/24` would hijack the route to the gateway and drop your SSH session
+when `wg0` comes up. Check with `ip route` before choosing. The examples here
+use `10.0.0.x`; substitute something unused such as `10.66.0.x` if it clashes.
+
 The home server dials out to the VPS, so the home router needs no port
 forwarding. Addresses here are placeholders: VPS `10.0.0.1`, home `10.0.0.2`.
 

@@ -1,0 +1,8 @@
+{{define "body"}}
+<p>Your network's address is <strong>{{.IP}}</strong>.</p>
+<p>Confirm to unlock Jellyfin for every device on this network.</p>
+<form method="post" action="/verify">
+<input type="hidden" name="token" value="{{.Token}}">
+<button type="submit">Unlock</button>
+</form>
+{{end}}

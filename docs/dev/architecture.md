@@ -11,7 +11,8 @@ sub-packages and no module dependencies.
 .
 ├── main.go           entry point, routes, embedded static FS, http.Server
 ├── config.go         Config types, loadConfig, applyEnv, validate
-├── handlers.go       templates, server type, middleware, clientIP, four handlers
+├── handlers.go       template loading, server type, middleware, clientIP, four handlers
+├── templates/        layout.html and one body file per page, embedded
 ├── tokens.go         tokenStore and limiter
 ├── mail.go           composeMessage, sendMagicLink
 ├── ipset.go          runIpset, ipsetAdd, publicIPv4
@@ -26,7 +27,7 @@ sub-packages and no module dependencies.
 
 | Name | Purpose |
 |------|---------|
-| `staticFS` (`embed.FS`) | `//go:embed static/pico.classless.min.css`. The only embedded file. |
+| `staticFS` (`embed.FS`) | `//go:embed static`: the vendored Pico stylesheet and `site.css`, a few rules for the index header. |
 | `(*server).routes() http.Handler` | Builds the `http.ServeMux` with the four page routes and `GET /static/`, and wraps it in `securityHeaders`. |
 | `main()` | `loadConfig`, fatal on error; `newServer` with a sender that calls `sendMagicLink(cfg.SMTP, ...)`; starts `http.Server` with timeouts; shuts down gracefully (10 s) on SIGINT or SIGTERM. |
 
@@ -48,8 +49,8 @@ Details: [Configuration internals](configuration-internals.md).
 
 | Name | Purpose |
 |------|---------|
-| `layoutHTML` | Shared page layout: head, stylesheet link, `<main><article>`. |
-| `pages` | Map of five parsed `html/template`s, one per body: `index`, `sent`, `confirm`, `success`, `error`. Built once at init with `template.Must`. |
+| `templateFS` | `embed.FS` holding `templates/`: `layout.html` plus one file per page. |
+| `pages` | Map of five parsed `html/template` sets, one per page: `index`, `sent`, `confirm`, `success`, `error`. Each set is `layout.html` parsed together with that page's `{{define "body"}}` file via `template.ParseFS`, so executing it renders the full layout. Built once at init with `template.Must`. |
 | `badIPMessage` | Text shown when the client is not a public IPv4 address. |
 | `server` | Holds `cfg`, `tokens *tokenStore`, `limiter *limiter`, `trusted map[string]bool`, `send func(to, link string) error`. |
 | `newServer(cfg, send) *server` | Builds the trusted-email set, a token store with `TokenTTL`, and a limiter of `RequestsPerEmailPerHour` per hour. |

@@ -188,4 +188,17 @@ Use your region's endpoint. Username and password are SES SMTP credentials,
 not IAM access keys, and `TYC_SMTP_FROM` must be a verified identity. While the
 account is in the SES sandbox, recipients must be verified too.
 
+**Resend**
+
+```yaml
+      TYC_SMTP_HOST: smtp.resend.com
+      TYC_SMTP_USERNAME: resend
+      TYC_SMTP_FROM: Jellyfin Access <hello@example.com>
+```
+
+The username is the literal word `resend`. The password is an API key; create
+one with sending permission only and scope it to the one domain. That domain
+must be verified in the Resend dashboard, which means adding the DKIM and SPF
+records it gives you, and `TYC_SMTP_FROM` must be an address on it.
+
 In every case `TYC_SMTP_PASSWORD` goes in `.env`, not in the compose file.

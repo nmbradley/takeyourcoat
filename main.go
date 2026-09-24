@@ -12,7 +12,7 @@ import (
 	"time"
 )
 
-//go:embed static/pico.classless.min.css
+//go:embed static
 var staticFS embed.FS
 
 func (s *server) routes() http.Handler {

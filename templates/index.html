@@ -1,0 +1,13 @@
+{{define "header"}}
+<header>
+<h1>May I Take Your Coat?</h1>
+<p>Unlock Jellyfin for your home network.</p>
+</header>
+{{end}}
+{{define "body"}}
+<p>Enter your email address to get a link that unlocks Jellyfin for this network.</p>
+<form method="post" action="/request">
+<label>Email <input type="email" name="email" autocomplete="email" required></label>
+<button type="submit">Send link</button>
+</form>
+{{end}}

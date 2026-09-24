@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"embed"
 	"html/template"
 	"log"
 	"net/http"
@@ -11,47 +12,15 @@ import (
 	"time"
 )
 
-const layoutHTML = `<!doctype html>
-<html lang="en">
-<head>
-<meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1">
-<title>takeyourcoat</title>
-<link rel="stylesheet" href="/static/pico.classless.min.css">
-</head>
-<body>
-<main>
-<h1>takeyourcoat</h1>
-<article>
-{{template "body" .}}
-</article>
-</main>
-</body>
-</html>
-`
+//go:embed templates
+var templateFS embed.FS
 
+// pages maps a page name to its parsed template set: the shared layout plus
+// that page's "body" definition. Executing the set renders the layout.
 var pages = func() map[string]*template.Template {
-	bodies := map[string]string{
-		"index": `<p>Enter your email address to get a link that unlocks Jellyfin for this network.</p>
-<form method="post" action="/request">
-<label>Email <input type="email" name="email" autocomplete="email" required></label>
-<button type="submit">Send link</button>
-</form>`,
-		"sent": `<p>If that address is on the list, a link is on its way. Check your inbox.</p>
-<p>Open the link on a device connected to the network you want to unlock.</p>`,
-		"confirm": `<p>Your network's address is <strong>{{.IP}}</strong>.</p>
-<p>Confirm to unlock Jellyfin for every device on this network.</p>
-<form method="post" action="/verify">
-<input type="hidden" name="token" value="{{.Token}}">
-<button type="submit">Unlock</button>
-</form>`,
-		"success": `<p>Done. <strong>{{.IP}}</strong> can reach Jellyfin for the next {{.Hours}} hours.</p>`,
-		"error":   `<p>{{.}}</p><p><a href="/">Start again</a></p>`,
-	}
 	m := map[string]*template.Template{}
-	for name, body := range bodies {
-		t := template.Must(template.New("layout").Parse(layoutHTML))
-		m[name] = template.Must(t.New("body").Parse(body))
+	for _, name := range []string{"index", "sent", "confirm", "success", "error"} {
+		m[name] = template.Must(template.ParseFS(templateFS, "templates/layout.html", "templates/"+name+".html"))
 	}
 	return m
 }()
