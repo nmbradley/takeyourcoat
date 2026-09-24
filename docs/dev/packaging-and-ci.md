@@ -66,9 +66,9 @@ part of the design:
 
 | Piece | Role |
 |-------|------|
-| `caddy` (`caddy:2`) | Publishes 80, 443 and 443/udp; mounts `./Caddyfile` read-only; keeps certificates on `caddy-data` and config on `caddy-config`. |
-| `takeyourcoat` | No published port; `TYC_LISTEN: 0.0.0.0:8080`; `TYC_TRUSTED_PROXIES: 172.28.0.0/24`; state on `tyc-data:/data`. |
-| `networks.web` | Bridge network pinned to `172.28.0.0/24`, so the trusted-proxy range is known in advance. |
+| `caddy` (`caddy:2@sha256:...`, version in a comment) | Fixed address `172.28.0.10` on `web`; publishes 80, 443 and 443/udp; mounts `./Caddyfile` read-only; keeps certificates on `caddy-data` and config on `caddy-config`. |
+| `takeyourcoat` | No published port; `TYC_LISTEN: 0.0.0.0:8080`; `TYC_TRUSTED_PROXIES: 172.28.0.10` (Caddy only; the /24 would include the host's gateway `172.28.0.1`); state on `tyc-data:/data`. |
+| `networks.web` | Bridge network pinned to `172.28.0.0/24`, so Caddy's fixed address is valid and known in advance. |
 
 `Caddyfile` (placeholders) has two sites: `hello.example.com` proxies to
 `takeyourcoat:8080`; `jellyfin.example.com` runs
@@ -104,10 +104,12 @@ docker-compose*.yml
 Caddyfile
 docs/
 *_test.go
+config.json
+*.local.*
 ```
 
-Keeps secrets and deployment details (`.env`, the real compose file, the
-Caddyfile with real hostnames) and history out of the build context, keeps
+Keeps secrets and deployment details (`.env`, `config.json`, `*.local.*` files, the
+real compose file, the Caddyfile with real hostnames) and history out of the build context, keeps
 tests out of the image build, and leaves out `docs/`, which the binary never
 needed.
 
@@ -124,17 +126,18 @@ trailing comment, and `actions/checkout` runs with
 |-|-|
 | Triggers | `push` to `main`; every `pull_request` |
 | Permissions | `contents: read` only |
-| Steps | checkout; `setup-go` with `go-version-file: go.mod`; `go vet ./...`; `go test -race ./...`; `go run golang.org/x/vuln/cmd/govulncheck@latest ./...`; `setup-buildx`; `build-push-action` with `push: false` |
+| Steps | checkout; `setup-go` with `go-version-file: go.mod`; `go vet ./...`; `go test -race ./...`; `go run golang.org/x/vuln/cmd/govulncheck@v1.8.0 ./...`; `setup-buildx`; `build-push-action` with `push: false` |
 
 The Docker build proves the image builds; nothing is pushed. `govulncheck` is
-fetched at `@latest` on every run, the one unpinned tool in CI.
+pinned to `v1.8.0`; bump it by hand in both workflows (Dependabot does not see
+`go run` versions).
 
 ### `release.yml`
 
 | | |
 |-|-|
 | Triggers | `push` of a tag matching `v*` only. Never `pull_request` or `pull_request_target`, so a fork cannot produce an image. |
-| Job `test` | Same vet, race test and govulncheck steps as CI (no Docker build). |
+| Job `test` | Same vet, race test and govulncheck (`@v1.8.0`) steps as CI (no Docker build). |
 | Job `publish` | `needs: test`. Adds `packages: write` for this job only. checkout; `docker/login-action` to `ghcr.io` with `GITHUB_TOKEN`; `setup-qemu`; `setup-buildx`; `metadata-action`; `build-push-action` for `linux/amd64,linux/arm64` with `push: true` and `provenance: false`. |
 
 Image name: `ghcr.io/${{ github.repository }}`, that is
@@ -143,11 +146,12 @@ Image name: `ghcr.io/${{ github.repository }}`, that is
 
 ### Dependabot
 
-`.github/dependabot.yml` checks weekly for three ecosystems at `/`:
+`.github/dependabot.yml` checks weekly for four ecosystems at `/`:
 
 | Ecosystem | Updates |
 |-----------|---------|
 | `docker` | The digest-pinned `FROM` lines in the Dockerfile |
+| `docker-compose` | The digest-pinned `caddy:2@sha256:...` image in `docker-compose.yml` |
 | `github-actions` | The SHA pins (and version comments) in both workflows |
 | `gomod` | `go.mod` (no dependencies today) |
 
@@ -169,7 +173,9 @@ For tag `v0.2.0`, `metadata-action` produces:
 |-----------|--------|
 | `0.2.0` | `type=semver,pattern={{version}}` (no leading `v`) |
 | `0.2` | `type=semver,pattern={{major}}.{{minor}}` |
-| `latest` | `type=raw,value=latest` |
+
+No `latest` tag is published, so nothing can pull a moving "newest" image by
+accident.
 
 Git tags keep the `v`; image tags drop it, so git tag `v0.2.0` is image
 `0.2.0`, which is what the repository's `docker-compose.yml` pins

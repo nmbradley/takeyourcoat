@@ -53,9 +53,9 @@ Details: [Configuration internals](configuration-internals.md).
 | `pages` | Map of six parsed `html/template` sets, one per page: `index`, `sent`, `confirm`, `success`, `error`, `locked`. Each set is `layout.html` parsed together with that page's `{{define "body"}}` file via `template.ParseFS`, so executing it renders the full layout. Built once at init with `template.Must`. |
 | `badIPMessage` | Text shown when the client is not a public IPv4 address. |
 | `server` | Holds `cfg`, `allow *allowlist`, `tokens *tokenStore`, `limiter *limiter` (per email and client IP), `capper *limiter` (per email across all IPs), `trusted map[string]bool`, `send func(to, link string) error`. |
-| `newServer(cfg, allow, send) *server` | Builds the trusted-email set, a token store with `TokenTTL`, a limiter of `RequestsPerEmailPerHour` per hour and a capper of `4 * RequestsPerEmailPerHour` per hour; keeps the allowlist it is given. |
-| `securityHeaders(next) http.Handler` | Middleware setting CSP, HSTS, `nosniff`, `no-referrer`, `no-store` on every response. |
-| `render(w, status, page, data)` | Executes a template into a buffer, then writes `Content-Type`, status and body. On template error: logs and returns 500. |
+| `newServer(cfg, allow, send) *server` | Builds the trusted-email set, a token store with `TokenTTL`, a limiter of `RequestsPerEmailPerHour` per hour and a capper of `4 * RequestsPerEmailPerHour` per hour; keeps the allowlist it is given; sets `static` (`PublicURL` without trailing slash) and `csp` (with the portal origin in `style-src`). |
+| `(*server).securityHeaders(next) http.Handler` | Middleware setting CSP (`s.csp`), HSTS, `nosniff`, `no-referrer`, `no-store` on every response. |
+| `(*server).render(w, status, page, data)` | Executes a template with `{Static: s.static, Data: data}` into a buffer, then writes `Content-Type`, status and body. On template error: logs and returns 500. |
 | `(*server).clientIP(r) (netip.Addr, bool)` | Client address from `RemoteAddr` or, when `RemoteAddr` is inside a trusted proxy prefix, the last `X-Forwarded-For` hop; `ok` only for public IPv4. |
 | `(*server).handleIndex` | `GET /`: the email form. |
 | `(*server).handleRequest` | `POST /request`: maybe issue a token and send mail; always the same page. |
@@ -221,7 +221,7 @@ including 404s, 405s and the stylesheet:
 
 | Header | Value |
 |--------|-------|
-| `Content-Security-Policy` | `default-src 'none'; style-src 'self'; form-action 'self'; frame-ancestors 'none'; base-uri 'none'` |
+| `Content-Security-Policy` | `default-src 'none'; style-src 'self' <portal origin>; form-action 'self'; frame-ancestors 'none'; base-uri 'none'`, where the portal origin is the scheme and host of `PublicURL` (`https://hello.example.com`) |
 | `Strict-Transport-Security` | `max-age=31536000` |
 | `X-Content-Type-Options` | `nosniff` |
 | `Referrer-Policy` | `no-referrer` |
@@ -229,8 +229,17 @@ including 404s, 405s and the stylesheet:
 
 The static handler overwrites `Cache-Control` afterwards (see below). `render`
 adds `Content-Type: text/html; charset=utf-8`. Pages contain no scripts, no
-inline styles and no external resources, which is what lets the CSP be this
-strict.
+inline styles and no resources outside the portal, which is what lets the CSP
+be this strict.
+
+`layout.html` links the stylesheets by absolute URL,
+`{{.Static}}/static/pico.classless.min.css` and `{{.Static}}/static/site.css`,
+where `Static` is the portal URL. On the portal that is the same origin. On the
+gated Jellyfin hostname, where Caddy returns the `locked` page from `/check`,
+a relative `/static/...` link would itself go through `forward_auth` and be
+refused; the absolute link loads the CSS from the ungated portal instead, and
+the portal origin in `style-src` allows it. Page bodies read their own values
+from `.Data`.
 
 ## Embedded static file
 

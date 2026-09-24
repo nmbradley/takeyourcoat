@@ -13,7 +13,8 @@ next to your edited `Caddyfile`. The ones in the repository use placeholders.
 ```yaml
 services:
   caddy:
-    image: caddy:2
+    # caddy:2.11.4
+    image: caddy:2@sha256:0c994536bddb66445885237f1a5dcc1916bccea922661c76b4e9fc24061f9b52
     restart: unless-stopped
     ports:
       - "80:80"
@@ -23,7 +24,10 @@ services:
       - ./Caddyfile:/etc/caddy/Caddyfile:ro
       - caddy-data:/data
       - caddy-config:/config
-    networks: [web]
+    networks:
+      web:
+        # Fixed address so the app can trust exactly this proxy and nothing else.
+        ipv4_address: 172.28.0.10
 
   takeyourcoat:
     # Pin to a version tag or digest, never latest.
@@ -39,7 +43,7 @@ services:
     networks: [web]
     environment:
       TYC_LISTEN: 0.0.0.0:8080
-      TYC_TRUSTED_PROXIES: 172.28.0.0/24
+      TYC_TRUSTED_PROXIES: 172.28.0.10
       TYC_PUBLIC_URL: https://hello.example.com
       TYC_TRUSTED_EMAILS: alice@example.com,bob@example.com
       TYC_WHITELIST_TTL: 72h
@@ -64,12 +68,12 @@ volumes:
 
 | Line | Why |
 |------|-----|
-| `image: caddy:2` | The official Caddy image. Pin it to a digest like the app if you want the same guarantees (see [Pinning](#pinning-the-image)). |
+| `image: caddy:2@sha256:...` | The official Caddy image, pinned by digest; the comment above records the version (`caddy:2.11.4`). Dependabot updates the digest in the repository; review and copy it to your VPS. See [Pinning](#pinning-the-image). |
 | `ports: 80, 443, 443/udp` | The only published ports. 80 for certificates and redirects, 443 TCP for HTTPS, 443 UDP for HTTP/3. |
 | `./Caddyfile:/etc/caddy/Caddyfile:ro` | Your Caddyfile, read-only. See [Caddy and WireGuard](caddy-and-wireguard.md#caddyfile). |
 | `caddy-data:/data` | Certificates and ACME account keys. Keep this volume, or Caddy requests new certificates on every recreate and can hit rate limits. |
 | `caddy-config:/config` | Caddy's autosaved config. |
-| `networks: [web]` | Shares the `web` network with the app, so `takeyourcoat:8080` resolves. |
+| `networks: web: ipv4_address: 172.28.0.10` | Shares the `web` network with the app, so `takeyourcoat:8080` resolves, at a fixed address the app can trust exactly. |
 
 Caddy is part of the compose project because `forward_auth` makes it part of
 the design: it has to reach the app by name on every Jellyfin request.
@@ -86,7 +90,7 @@ the design: it has to reach the app by name on every Jellyfin request.
 | `tyc-data:/data` | The allowlist, `/data/allowlist.json`. See [Configuration](configuration.md#the-state-file). |
 | `networks: [web]` | Reachable from Caddy as `takeyourcoat`. No `ports:` entry, so nothing outside the compose network can connect to it. |
 | `TYC_LISTEN: 0.0.0.0:8080` | Listen on the container's network interface so Caddy can reach it. The default, `127.0.0.1`, would only be reachable from inside the container. |
-| `TYC_TRUSTED_PROXIES: 172.28.0.0/24` | Believe `X-Forwarded-For` from anything on the `web` network, which is where Caddy is. See [Trusted proxies](configuration.md#trusted-proxies). |
+| `TYC_TRUSTED_PROXIES: 172.28.0.10` | Believe `X-Forwarded-For` only from Caddy's fixed address, not from the whole `web` network: the network's gateway, `172.28.0.1`, is the host itself. See [Trusted proxies](configuration.md#trusted-proxies). |
 | `environment:` (the rest) | The configuration. See [Configuration](configuration.md). |
 | `TYC_SMTP_PASSWORD: ${TYC_SMTP_PASSWORD}` | Interpolated by Compose from `.env` so the secret is not in the compose file. |
 
@@ -103,7 +107,7 @@ Settings not listed use their defaults: state file `/data/allowlist.json`,
 
 | Block | Why |
 |-------|-----|
-| `web` with `subnet: 172.28.0.0/24` | A fixed subnet, so `TYC_TRUSTED_PROXIES` can name it. Without it Docker picks a range, and it can differ between hosts. If `172.28.0.0/24` clashes with something on your VPS, pick another private range and change both lines. |
+| `web` with `subnet: 172.28.0.0/24` | A fixed subnet, so Caddy can have a fixed address in it (`172.28.0.10`) for `TYC_TRUSTED_PROXIES` to name. Without it Docker picks a range, and it can differ between hosts. If `172.28.0.0/24` clashes with something on your VPS, pick another private range and change the subnet, Caddy's `ipv4_address` and `TYC_TRUSTED_PROXIES` together. |
 | `caddy-data`, `caddy-config`, `tyc-data` | Named volumes, managed by Docker. They survive `docker compose down` and upgrades; `docker compose down -v` deletes them. |
 
 ## The `.env` file
@@ -169,14 +173,15 @@ pushed. The release workflow produces these tags for git tag `v0.2.0`:
 | Image tag | Moves? |
 |-----------|--------|
 | `0.2.0` | No, one release |
-| `0.2` | Yes, follows the latest `0.2.x` |
-| `latest` | Yes, follows every release |
+| `0.2` | Yes, follows the newest `0.2.x` |
+
+There is no `latest` tag.
 
 Git tags keep the leading `v` (`v0.2.0`); image tags do not (`0.2.0`),
 because the workflow uses the semver `{{version}}` pattern. The sample compose
 file pins `:0.2.0`.
 
-- **Pin a full version** (`:0.2.0`) at minimum. Never use `latest` or `0.2`.
+- **Pin a full version** (`:0.2.0`) at minimum. Never use `0.2`.
 - **Better, pin the digest**, which cannot be re-pointed even if the tag is:
 
   ```sh
@@ -189,7 +194,9 @@ file pins `:0.2.0`.
       image: ghcr.io/nmbradley/takeyourcoat:0.2.0@sha256:<digest>
   ```
 
-  The same works for `caddy:2`: inspect it and pin `caddy:2@sha256:<digest>`.
+  The shipped compose file already pins Caddy this way (`caddy:2@sha256:...`).
+  To move to a newer Caddy yourself, inspect `caddy:2` the same way and
+  replace the digest and the version comment.
 
 - **No auto-updaters** (Watchtower and similar) against either container. Caddy
   holds your TLS keys and decides who reaches Jellyfin; review each upgrade by

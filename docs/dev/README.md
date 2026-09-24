@@ -40,7 +40,7 @@ GOTOOLCHAIN=auto go build -o /dev/null .
 To run the vulnerability check CI runs:
 
 ```sh
-GOTOOLCHAIN=auto go run golang.org/x/vuln/cmd/govulncheck@latest ./...
+GOTOOLCHAIN=auto go run golang.org/x/vuln/cmd/govulncheck@v1.8.0 ./...
 ```
 
 To build the image:

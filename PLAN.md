@@ -52,7 +52,7 @@ No cookies, no sessions, no database. The token is the only credential.
 - **Tokens**: 32 bytes from `crypto/rand`, base64url in the link. Server stores `sha256(token)` → {email, expiry}. Single use, purged on expiry.
 - **Enumeration and timing**: same page and status for known and unknown emails. Mail is sent in a goroutine so response time does not reveal whether a send happened.
 - **Rate limiting**: sliding windows per email and client IP (default 3/hour) and per email across all IPs (4x, 12/hour), so the portal cannot be used to spam the trusted list. Requests for unknown emails or from non-public client addresses do no work.
-- **HTTP hygiene**: `http.Server` with Read/Write/Idle timeouts, `MaxBytesReader` on forms, method checks, `html/template` for all output, `Cache-Control: no-store` on pages, `X-Content-Type-Options`, `Referrer-Policy: no-referrer`, CSP `default-src 'none'; style-src 'self'; form-action 'self'; frame-ancestors 'none'; base-uri 'none'`, HSTS. No inline styles, no scripts, no external requests from the browser. Listens on loopback only by default.
+- **HTTP hygiene**: `http.Server` with Read/Write/Idle timeouts, `MaxBytesReader` on forms, method checks, `html/template` for all output, `Cache-Control: no-store` on pages, `X-Content-Type-Options`, `Referrer-Policy: no-referrer`, CSP `default-src 'none'; style-src 'self' <portal origin>; form-action 'self'; frame-ancestors 'none'; base-uri 'none'`, HSTS. Stylesheets load from the portal origin by absolute URL, so the locked page is styled on the gated hostname. No inline styles, no scripts, no external requests from the browser. Listens on loopback only by default.
 - **Container**: UID 65532, no capabilities, read-only rootfs, no-new-privileges, no host network. Writes only `/data`.
 - **Secrets**: SMTP password arrives via env from a 0600 `.env` file, or via the JSON file. It is never logged and the config struct has no `String()` that could leak it. Logs record email and IP on success only.
 - **Refresh semantics**: re-verifying sets the expiry to now + TTL again rather than erroring.
@@ -139,7 +139,8 @@ SHA-256 `61207a40ffc02a42d1e50143651c121beab70ed413c934c1ff84fa263ba436b0`.
 - `docker-compose.yml` includes Caddy, because `forward_auth` makes it part
   of the design: `caddy` publishes 80, 443 and 443/udp and mounts the
   `Caddyfile`; `takeyourcoat` publishes nothing, listens on `0.0.0.0:8080`
-  on the `web` network (`172.28.0.0/24`), trusts that subnet as proxy, and
+  on the `web` network (`172.28.0.0/24`), trusts exactly Caddy's fixed
+  address `172.28.0.10` as proxy (not the /24, which holds the host's gateway), and
   keeps its allowlist on the `tyc-data` volume. No host network, no
   `cap_add`, no `user:` line.
 - `Caddyfile` in the repo with placeholders: `hello` site proxies to the
@@ -169,13 +170,13 @@ nothing more unless a job needs it.
 **`ci.yml`** on push and pull request:
 1. `actions/checkout`, `actions/setup-go` from `go.mod`.
 2. `go vet ./...`, `go test -race ./...`.
-3. `go run golang.org/x/vuln/cmd/govulncheck@latest ./...`.
+3. `go run golang.org/x/vuln/cmd/govulncheck@v1.8.0 ./...` (pinned).
 4. `docker build .` to prove the image builds. Nothing is pushed.
 
 **`release.yml`** on push of a `v*` tag only:
 1. Same test job as above; publish depends on it passing.
 2. `docker/login-action` to GHCR with `GITHUB_TOKEN`, job permission `packages: write`.
-3. `docker/build-push-action` for `linux/amd64` and `linux/arm64`, tagged with the version and `latest`, labelled with the source commit.
+3. `docker/build-push-action` for `linux/amd64` and `linux/arm64`, tagged with the semver version tags only (no `latest`), labelled with the source commit.
 4. Never triggered by `pull_request` or `pull_request_target`, so a fork cannot produce an image.
 
 ## README contents

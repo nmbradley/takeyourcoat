@@ -15,7 +15,7 @@ Defaults are the values in `loadConfig` in `config.go`.
 |---------|----------|---------|---------|
 | `TYC_LISTEN` | `listen` | `127.0.0.1:8080` | Address the HTTP server listens on. The shipped compose file sets `0.0.0.0:8080`, because the app is on a bridge network with Caddy and publishes no port. |
 | `TYC_PUBLIC_URL` | `public_url` | required | Base URL used to build the emailed link and the locked page's link, for example `https://hello.example.com`. Must be `https://` (plain `http://` only for `localhost` or `127.0.0.1`). |
-| `TYC_TRUSTED_PROXIES` | `trusted_proxies` | `127.0.0.1,::1` | Direct peers whose `X-Forwarded-For` is believed: addresses or CIDR prefixes. The shipped compose file sets `172.28.0.0/24`. |
+| `TYC_TRUSTED_PROXIES` | `trusted_proxies` | `127.0.0.1,::1` | Direct peers whose `X-Forwarded-For` is believed: addresses or CIDR prefixes. The shipped compose file sets `172.28.0.10`, Caddy's fixed address. |
 | `TYC_TRUSTED_EMAILS` | `trusted_emails` | required | Who may request a link. Bare addresses only (`alice@example.com`, not `Alice <alice@example.com>`). Compared lower-cased and trimmed. |
 | `TYC_STATE_FILE` | `state_file` | `/data/allowlist.json` | Where the allowlist is saved. See [The state file](#the-state-file). |
 | `TYC_WHITELIST_TTL` | `whitelist_ttl` | `72h` | How long an unlocked address stays unlocked. |
@@ -68,13 +68,15 @@ is either a bare address, which means exactly that address, or a CIDR prefix:
 |-------|--------|
 | `127.0.0.1` | only `127.0.0.1` (same as `127.0.0.1/32`) |
 | `::1` | only `::1` (same as `::1/128`) |
-| `172.28.0.0/24` | `172.28.0.0` to `172.28.0.255`, the shipped compose network |
-| `172.28.0.0/24,127.0.0.1` | both of the above |
+| `172.28.0.10` | only Caddy in the shipped compose file |
+| `172.28.0.10,127.0.0.1` | both of the above |
+| `10.10.0.0/24` | `10.10.0.0` to `10.10.0.255`, for a proxy whose address you cannot pin |
 
-In the shipped compose file Caddy and the app share the `web` network, pinned
-to `172.28.0.0/24`, so Caddy's container address is always in that range even
-though Docker may hand it a different address on each recreate. If you change
-the subnet in the compose file, change `TYC_TRUSTED_PROXIES` with it.
+In the shipped compose file Caddy and the app share the `web` network
+(`172.28.0.0/24`), and Caddy is given the fixed address `172.28.0.10`
+(`ipv4_address`), which is exactly what the app trusts. The Docker gateway, `172.28.0.1`, is inside that /24 and belongs to the host, so trusting the whole subnet would let any process on the VPS forge client addresses; trusting only Caddy's address does not. If you
+change the subnet or Caddy's address in the compose file, change
+`TYC_TRUSTED_PROXIES` with it.
 
 If Caddy connects from an address that is not covered, the app sees Caddy's
 own private address as the client: `/check` returns the locked page for
@@ -142,7 +144,7 @@ keys in the file are ignored.
 {
   "public_url": "https://hello.example.com",
   "trusted_emails": ["alice@example.com", "bob@example.com"],
-  "trusted_proxies": ["172.28.0.0/24"],
+  "trusted_proxies": ["172.28.0.10"],
   "state_file": "/data/allowlist.json",
   "whitelist_ttl": "72h",
   "token_ttl": "15m",

@@ -64,9 +64,9 @@ The process refuses to start on any missing or malformed field and names it.
 - `TYC_LISTEN`: the shipped compose file sets `0.0.0.0:8080`, because the app
   sits on a bridge network with Caddy. No port is published, so it is still
   unreachable from outside.
-- `TYC_TRUSTED_PROXIES` accepts addresses and CIDR prefixes. The shipped
-  compose file sets it to the compose network's subnet, `172.28.0.0/24`, which
-  covers the Caddy container.
+- `TYC_TRUSTED_PROXIES` accepts addresses and CIDR prefixes. In the shipped
+  compose file Caddy has the fixed address `172.28.0.10` on the `web` network
+  (`172.28.0.0/24`), and the app trusts exactly that address.
 - `TYC_PUBLIC_URL` must be `https://` (plain `http://` only for `localhost`).
 - `TYC_REQUESTS_PER_EMAIL_PER_HOUR` counts per email and client address, with
   a cap of four times that per email across all addresses.
@@ -138,7 +138,11 @@ Step by step: [Deployment](docs/user/deployment.md#migrating-from-v01).
   filesystem, `cap_drop: [ALL]`, `no-new-privileges` and no host networking.
   It writes only its state file on `/data`.
 - **Pin the image** by version tag or, better, digest
-  (`ghcr.io/nmbradley/takeyourcoat@sha256:...`). Never use `latest`.
+  (`ghcr.io/nmbradley/takeyourcoat@sha256:...`). Releases publish semver tags
+  only (`0.2.0`, `0.2`); there is no `latest`. The shipped compose file pins
+  Caddy by digest too (`caddy:2@sha256:...`), and Dependabot's
+  `docker-compose` ecosystem keeps that digest current in this repository;
+  copy updates into your VPS copy after review.
 - **No auto-updaters** (Watchtower and similar) against this stack. Review each
   upgrade.
 - **Build locally** as the zero-trust alternative: clone the repo on the VPS,

@@ -75,8 +75,9 @@ Check both after deploying.
    request looks like it comes from a private IP and `/check` answers `403`
    with "This portal only works with public IPv4 addresses". The emailed
    link page shows the same message, so nobody can unlock. The shipped
-   compose file pins the network to `172.28.0.0/24` and trusts exactly that
-   range. If you changed the subnet, change `TYC_TRUSTED_PROXIES` to match.
+   compose file gives Caddy the fixed address `172.28.0.10` on the `web`
+   network and trusts exactly that address. If you changed the subnet or
+   Caddy's `ipv4_address`, change `TYC_TRUSTED_PROXIES` to match.
    See [Configuration](configuration.md#trusted-proxies).
 
 ## Next

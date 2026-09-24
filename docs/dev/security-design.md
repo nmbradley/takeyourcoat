@@ -55,8 +55,11 @@ From an untrusted peer, `X-Forwarded-For` is ignored entirely
 `netip.ParseAddr` is `Unmap()`ed and becomes a single-address prefix (`/32` or
 `/128`); otherwise it must parse with `netip.ParsePrefix` and is stored
 `Masked()`, so `172.28.0.5/24` means `172.28.0.0/24`. The default is
-`127.0.0.1` and `::1`; the shipped compose file uses the compose network,
-`172.28.0.0/24`.
+`127.0.0.1` and `::1`; the shipped compose file uses
+`172.28.0.10`, Caddy's fixed address on the compose network, and not the
+network's `172.28.0.0/24`: the Docker gateway `172.28.0.1` is inside that /24
+and belongs to the host, so trusting the /24 would trust any process on the
+VPS to forge client addresses.
 
 Every address in a trusted prefix can claim any client address, so the range
 must contain only the reverse proxy. On the compose network that means only
@@ -247,9 +250,10 @@ goroutines indefinitely.
 
 `handlers.go:securityHeaders` wraps the entire mux (`main.go:routes`):
 
-- `Content-Security-Policy: default-src 'none'; style-src 'self'; form-action 'self'; frame-ancestors 'none'; base-uri 'none'`:
+- `Content-Security-Policy: default-src 'none'; style-src 'self' <portal origin>; form-action 'self'; frame-ancestors 'none'; base-uri 'none'`:
   no scripts, images, frames or connections at all; styles only from the
-  portal's own origin; forms may only post back to it; no other site may frame
+  serving origin and the portal origin (the scheme and host of `PublicURL`,
+  built once in `newServer`); forms may only post back to the serving origin; no other site may frame
   the pages (clickjacking of the Unlock button); no `<base>` rewriting.
 - `Strict-Transport-Security: max-age=31536000`: browsers stay on HTTPS for a
   year. Sent on every response, including the locked page on the Jellyfin
@@ -259,6 +263,11 @@ goroutines indefinitely.
   no Referer may carry it anywhere.
 - `Cache-Control: no-store`: pages with tokens and addresses are never cached.
   Only `GET /static/` overrides it, with a one-year immutable cache.
+
+The portal origin is in `style-src` because the locked page is served on the
+gated Jellyfin hostname and loads its stylesheets from the portal by absolute
+URL (`{{.Static}}/static/...`); a same-origin link there would be refused by
+`forward_auth`.
 
 All output goes through `html/template`, which escapes `{{.IP}}`, `{{.Token}}`
 and error text contextually. Pages have no inline styles or scripts, so the

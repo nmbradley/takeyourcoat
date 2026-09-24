@@ -41,7 +41,7 @@
         |  HTTPS :443 jellyfin.example.com
         v
    +----------------------------- VPS ---------------------------------+
-   |   compose network "web" (172.28.0.0/24)                           |
+   |   compose network "web" (172.28.0.0/24), Caddy at 172.28.0.10     |
    |   +---------------+  hello: reverse_proxy   +--------------------+ |
    |   |  Caddy        | ----------------------> | takeyourcoat :8080 | |
    |   |  :80 :443     |                         | UID 65532, no caps | |

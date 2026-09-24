@@ -63,8 +63,8 @@ How the gate works:
 
 Why the client address is right:
 
-- Caddy connects to the app from its address on the compose network
-  (`172.28.0.0/24`), which the shipped compose file sets as
+- Caddy connects to the app from its fixed address on the compose network,
+  `172.28.0.10`, which the shipped compose file sets as
   `TYC_TRUSTED_PROXIES`. The app therefore reads the client address from the
   last hop of `X-Forwarded-For`, which Caddy sets to the real client IP. See
   [Configuration](configuration.md#trusted-proxies).

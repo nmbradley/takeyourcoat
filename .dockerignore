@@ -7,3 +7,5 @@ docker-compose*.yml
 Caddyfile
 docs/
 *_test.go
+config.json
+*.local.*

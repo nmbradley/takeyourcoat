@@ -34,10 +34,11 @@ page shows the same message.
 
 | Cause | Fix |
 |-------|-----|
-| `TYC_TRUSTED_PROXIES` does not cover the Caddy container's address | Set it to the `web` network's subnet (`172.28.0.0/24` in the shipped file). Find the actual address with `sudo docker compose exec caddy ip -4 addr show eth0`. |
-| The `subnet:` in the compose file was changed and `TYC_TRUSTED_PROXIES` was not | Change both together. |
-| `TYC_TRUSTED_PROXIES` was set to an empty value, or left at the default `127.0.0.1,::1` | Set it to the compose subnet. The default only fits an app and Caddy on the same host network. |
-| The `ipam` block was removed, so Docker picked a different range | Put it back, or set `TYC_TRUSTED_PROXIES` to the range Docker chose (`sudo docker network inspect <project>_web`). |
+| `TYC_TRUSTED_PROXIES` is not Caddy's address | Set it to Caddy's fixed address (`172.28.0.10` in the shipped file). Check the actual address with `sudo docker compose exec caddy ip -4 addr show eth0`. |
+| The `ipv4_address: 172.28.0.10` line under Caddy's `networks:` was removed, so Docker gave Caddy another address | Put it back. |
+| The `subnet:` or Caddy's `ipv4_address` was changed and `TYC_TRUSTED_PROXIES` was not | Change them together. |
+| `TYC_TRUSTED_PROXIES` was set to an empty value, or left at the default `127.0.0.1,::1` | Set it to `172.28.0.10`. The default only fits an app and Caddy on the same host network. |
+| The `ipam` block was removed | Put it back; Caddy's fixed address needs the fixed subnet. |
 
 After changing the compose file: `sudo docker compose up -d`. The address
 check happens before the token is touched, so outstanding links still work
@@ -183,5 +184,4 @@ show a certificate warning.
 In v0.1 the proof that the gate worked was a `curl` to port 8920 that timed
 out, because the kernel dropped the packets. In v0.2 the TLS connection
 always succeeds and an unverified client gets a `403` with the locked page.
-That is the expected result, not a fault. The locked page on the Jellyfin
-hostname may look unstyled, because its stylesheet request is gated too.
+That is the expected result, not a fault.
