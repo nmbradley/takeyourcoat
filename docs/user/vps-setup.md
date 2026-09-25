@@ -4,7 +4,7 @@
 
 Starting point: a fresh Debian 12 or Ubuntu 22.04/24.04 VPS with a public IPv4
 address, SSH access as a user with `sudo`, and DNS A records for
-`hello.example.com` and `jellyfin.example.com` pointing at the VPS. Replace the
+`hello.example.com` and `app.example.com` pointing at the VPS. Replace the
 placeholder names with your own throughout.
 
 The host needs very little: Docker and three open ports. Caddy and the app
@@ -53,19 +53,19 @@ project.
 
 Check both after deploying.
 
-1. **`forward_auth` misconfigured: Jellyfin reachable without verifying.** If
-   the Jellyfin site in the Caddyfile has no `forward_auth` block, or it
+1. **`forward_auth` misconfigured: the protected site reachable without verifying.**
+   If the protected site in the Caddyfile has no `forward_auth` block, or it
    points somewhere other than `takeyourcoat:8080` with `uri /check`, Caddy
-   proxies every request straight to Jellyfin. Check the Caddyfile against
+   proxies every request straight to the backend. Check the Caddyfile against
    [Caddy and WireGuard](caddy-and-wireguard.md#caddyfile), then prove it: from
    a network that has **not** verified (mobile data on a phone hotspot works),
 
    ```sh
-   curl -s -o /dev/null -w '%{http_code}\n' https://jellyfin.example.com
+   curl -s -o /dev/null -w '%{http_code}\n' https://app.example.com
    ```
 
    must print `403`. Then go through the portal from that network and run it
-   again; it should now print Jellyfin's own status (`200` or a `302`
+   again; it should now print your backend's own status (`200` or a `302`
    redirect).
 
 2. **Wrong proxy range: everyone gets the locked page, even after unlocking.**

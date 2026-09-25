@@ -23,7 +23,7 @@ func messageID(fromAddr string) string {
 func composeMessage(from, to, link, msgID string, date time.Time) []byte {
 	return []byte(fmt.Sprintf("From: %s\r\n"+
 		"To: %s\r\n"+
-		"Subject: Your Jellyfin access link\r\n"+
+		"Subject: Your access link\r\n"+
 		"Date: %s\r\n"+
 		"Message-ID: %s\r\n"+
 		"MIME-Version: 1.0\r\n"+

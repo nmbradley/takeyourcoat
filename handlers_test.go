@@ -74,6 +74,9 @@ func TestIndexRendersFormWithSecurityHeaders(t *testing.T) {
 	if !strings.Contains(w.Body.String(), "<h1>May I Take Your Coat?</h1>") {
 		t.Fatalf("index missing header: %s", w.Body)
 	}
+	if !strings.Contains(w.Body.String(), "<p>Temporary access for the network you are on.</p>") {
+		t.Errorf("index missing tagline: %s", w.Body)
+	}
 	for k, v := range map[string]string{
 		"Content-Security-Policy":   "default-src 'none'; style-src 'self' https://hello.example.com; form-action 'self'; frame-ancestors 'none'; base-uri 'none'",
 		"Strict-Transport-Security": "max-age=31536000",

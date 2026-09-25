@@ -1,29 +1,32 @@
 # takeyourcoat: plan
 
+Purpose: provide a minimal, self-hosted Knocknoc replacement: email-verified, time-limited IP allowlisting enforced by Caddy forward_auth.
+
 A tiny Go captive portal that lets a trusted person unlock their
 household's public IPv4 address for a few days, so every device on that
-network can reach Jellyfin. Caddy enforces it by asking the app on every
-Jellyfin request (`forward_auth`). Stdlib only. One binary, one JSON state
+network can reach whatever Caddy fronts. Caddy enforces it by asking the app
+on every request to the protected site (`forward_auth`). Stdlib only. One binary, one JSON state
 file, one unprivileged container next to Caddy.
 
 ## Decisions (settled)
 
 | Topic         | Decision |
 |---------------|----------|
-| Placement     | Runs on the public VPS in one compose project with Caddy. Jellyfin lives at home behind a WireGuard tunnel to that VPS. |
-| Enforcement   | In the app, via Caddy `forward_auth`: Caddy sends `GET /check` for every Jellyfin request; 200 proxies, 403 returns the locked page. Replaces ipset/iptables, which cannot see hostnames. |
+| Placement     | Runs on the public VPS in one compose project with Caddy. The backend can live anywhere Caddy can reach, for example at home behind a WireGuard tunnel to that VPS. |
+| Enforcement   | In the app, via Caddy `forward_auth`: Caddy sends `GET /check` for every request to the protected site; 200 proxies, 403 returns the locked page. Replaces ipset/iptables, which cannot see hostnames. |
 | Container     | Bridge network shared with Caddy, no published port. UID 65532, `cap_drop: ALL`, no capabilities added, read-only rootfs, `no-new-privileges`, one named volume at `/data`. |
-| Ingress       | Caddy (in compose) terminates TLS for both hostnames on 443: `hello.example.com` proxies to `takeyourcoat:8080`; `jellyfin.example.com` is gated by `forward_auth` and proxies to Jellyfin over WireGuard. App trusts `X-Forwarded-For` only from configured proxy addresses or CIDRs. |
+| Ingress       | Caddy (in compose) terminates TLS for both hostnames on 443: `hello.example.com` proxies to `takeyourcoat:8080`; `app.example.com` is gated by `forward_auth` and proxies to the backend. App trusts `X-Forwarded-For` only from configured proxy addresses or CIDRs. |
 | Email         | SMTP with STARTTLS via `net/smtp` + `crypto/tls`. |
 | Config        | Environment variables first, optional JSON file second. Every key has a `TYC_` env var. Compose `environment:` block can configure everything with no file mounted. |
 | Verification  | Magic link opens a page showing the detected IP with a confirm button. Only the POST whitelists. Defeats link prefetchers. |
-| Address family| IPv4 only. IPv6 clients get a clear error, and the locked page on Jellyfin. |
+| Address family| IPv4 only. IPv6 clients get a clear error, and the locked page on the protected site. |
+| Naming        | None. The pages and the email never name a backend: the index says "Temporary access for the network you are on." and the email subject is "Your access link". |
 | Defaults      | Whitelist 72h, one unlocked address per email, token 15m single use, 3 link requests per email per client IP per hour (capped at 12 per email), identical response for known and unknown emails. |
 | Dependencies  | None outside the Go standard library. Pico CSS v2.1.1 (MIT, classless build) is vendored as a single file in `static/` and embedded in the binary. |
 
 ## Port layout (resolved)
 
-Both hostnames share 443. The v0.1 split (Jellyfin on 8920 so a port-based
+Both hostnames share 443. The v0.1 split (the protected site on 8920 so a port-based
 iptables rule could gate it) is gone, and no second public IP is needed.
 
 ## Host prerequisites
@@ -97,7 +100,7 @@ Equivalent JSON, for anyone who prefers a file:
     "host": "smtp.fastmail.com",
     "username": "you@example.com",
     "password": "app-password",
-    "from": "Jellyfin Access <you@example.com>"
+    "from": "Access Portal <you@example.com>"
   }
 }
 ```
@@ -144,8 +147,8 @@ SHA-256 `61207a40ffc02a42d1e50143651c121beab70ed413c934c1ff84fa263ba436b0`.
   keeps its allowlist on the `tyc-data` volume. No host network, no
   `cap_add`, no `user:` line.
 - `Caddyfile` in the repo with placeholders: `hello` site proxies to the
-  app; `jellyfin` site runs `forward_auth takeyourcoat:8080 { uri /check }`
-  then proxies to the WireGuard peer.
+  app; `app` site runs `forward_auth takeyourcoat:8080 { uri /check }`
+  then proxies to the backend (`10.0.0.2:8080`, the address and port the backend listens on).
 - The SMTP password comes from a `.env` file next to the compose file, mode
   0600, gitignored. Anyone who prefers a JSON file adds
   `TYC_CONFIG=/etc/takeyourcoat/config.json` and a read-only volume.
@@ -181,11 +184,11 @@ nothing more unless a job needs it.
 
 ## README contents
 
-1. What it is, and how `forward_auth` gates Jellyfin.
+1. What it is, and how `forward_auth` gates the protected site.
 2. Host prerequisites: Docker, TCP 80/443 and UDP 443. No ipset or iptables.
 3. Config reference and SMTP provider examples.
 4. Deployment: edit compose and Caddyfile, `.env`, `docker compose up -d`.
-5. Upgrading from v0.1, security notes, Jellyfin known proxies.
+5. Upgrading from v0.1, security notes, trusted proxies on the backend.
 6. User instructions: open the portal on a phone on the household Wi-Fi,
    request link, confirm from the same network.
 
@@ -197,5 +200,5 @@ nothing more unless a job needs it.
 4. `handlers.go` with `httptest` tests: form renders, unknown email gets same response as known, XFF ignored from untrusted RemoteAddr, XFF honoured from trusted proxy CIDR, verify GET does not consume, verify POST unlocks once then rejects reuse, `/check` 200 only for an unlocked address and 403 locked page otherwise (including IPv6), `/static/pico.classless.min.css` returns 200 with `text/css` → green.
 5. `mail.go`, thin; tested manually against a real SMTP account, plus a unit test that the message body contains the link.
 6. `main.go`, Dockerfile, compose file, Caddyfile, `.gitignore`, `.env.example`, Dependabot, both workflows → `docker build` succeeds, `docker compose config` and `caddy validate` pass.
-7. On the VPS: deploy, confirm Jellyfin shows the locked page from an unverified network, walk the flow from a phone, confirm the entry in `/data/allowlist.json` and that Jellyfin loads on the Apple TV.
+7. On the VPS: deploy, confirm the protected site shows the locked page from an unverified network, walk the flow from a phone, confirm the entry in `/data/allowlist.json` and that the site loads on a TV, console or any device on the household network.
 8. `go vet`, `govulncheck` (run via `go run`, not vendored) clean.

@@ -71,9 +71,10 @@ part of the design:
 | `networks.web` | Bridge network pinned to `172.28.0.0/24`, so Caddy's fixed address is valid and known in advance. |
 
 `Caddyfile` (placeholders) has two sites: `hello.example.com` proxies to
-`takeyourcoat:8080`; `jellyfin.example.com` runs
+`takeyourcoat:8080`; `app.example.com` runs
 `forward_auth takeyourcoat:8080 { uri /check }` and then proxies to the
-WireGuard peer. Operators edit the hostnames and the backend address. Both
+backend, `10.0.0.2:8080`. Operators edit the hostnames and the backend address
+(the address and port their backend listens on). Both
 files are validated without starting anything:
 
 ```sh

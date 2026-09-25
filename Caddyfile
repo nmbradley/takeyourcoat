@@ -3,10 +3,10 @@ hello.example.com {
 	reverse_proxy takeyourcoat:8080
 }
 
-# Jellyfin: each request is first checked with the app; only unlocked IPs reach the backend.
-jellyfin.example.com {
+# Protected site: each request is first checked with the app; only unlocked IPs reach the backend.
+app.example.com {
 	forward_auth takeyourcoat:8080 {
 		uri /check
 	}
-	reverse_proxy 10.0.0.2:8096
+	reverse_proxy 10.0.0.2:8080
 }

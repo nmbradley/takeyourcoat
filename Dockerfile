@@ -7,7 +7,7 @@ RUN CGO_ENABLED=0 go build -trimpath -ldflags="-s -w" -o /takeyourcoat .
 # alpine:3.23
 FROM alpine:3.23@sha256:85fe1e81d6758c208f3e1eed4338a1997e19d4be002d4dd32d3100c9a8c010a0
 LABEL org.opencontainers.image.source="https://github.com/nmbradley/takeyourcoat" \
-      org.opencontainers.image.description="Captive portal that unlocks a household IPv4 for Jellyfin via Caddy forward_auth" \
+      org.opencontainers.image.description="Minimal self-hosted Knocknoc replacement: email-verified, time-limited IP allowlisting for anything behind Caddy" \
       org.opencontainers.image.licenses="MIT"
 RUN mkdir /data && chown 65532:65532 /data
 COPY --from=build /takeyourcoat /takeyourcoat

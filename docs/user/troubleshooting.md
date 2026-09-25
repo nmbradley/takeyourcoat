@@ -13,16 +13,16 @@ sudo docker compose logs --tail 100 takeyourcoat caddy
 
 | Symptom | Likely cause | Fix |
 |---------|--------------|-----|
-| Everyone gets "This network is not unlocked" or the IPv6/private message on Jellyfin, even after unlocking | `TYC_TRUSTED_PROXIES` does not cover the Caddy container, so the app sees Caddy as the client | [Details](#everyone-gets-the-locked-page) |
-| Jellyfin reachable from networks that never verified; nobody ever sees the locked page | The Jellyfin site in the Caddyfile has no working `forward_auth` block | [Details](#nobody-gets-the-locked-page) |
-| Portal says "Done", but Jellyfin still shows the locked page for that household | Wrong address unlocked, entry expired, or the household IP changed | [Details](#jellyfin-still-locked-after-verifying) |
-| Unlocked, the check passes, but Jellyfin does not load | Tunnel or Jellyfin down | [Details](#jellyfin-still-locked-after-verifying) |
+| Everyone gets "This network is not unlocked" or the IPv6/private message on the protected site, even after unlocking | `TYC_TRUSTED_PROXIES` does not cover the Caddy container, so the app sees Caddy as the client | [Details](#everyone-gets-the-locked-page) |
+| The protected site is reachable from networks that never verified; nobody ever sees the locked page | The protected site in the Caddyfile has no working `forward_auth` block | [Details](#nobody-gets-the-locked-page) |
+| Portal says "Done", but the protected site still shows the locked page for that household | Wrong address unlocked, entry expired, or the household IP changed | [Details](#still-locked-after-verifying) |
+| Unlocked, the check passes, but the protected site does not load | Tunnel or backend down | [Details](#still-locked-after-verifying) |
 | Locked page with the IPv6 message for one client only | The client connected over IPv6; `/check` is IPv4 only | [Details](#ipv6-or-private-address-message) |
 | "Something went wrong unlocking your network" and `allowlist add ... permission denied` in the log | `/data` not writable by UID 65532 | [Details](#state-file-permission-denied) |
 | Browser shows a certificate error, or Caddy logs ACME failures | Ports 80/443 closed, DNS wrong, or something else on 80/443 | [Details](#caddy-cannot-get-certificates) |
 | "That link is invalid or has expired." | Link older than `TYC_TOKEN_TTL`, already used, or the app restarted | [Details](#that-link-is-invalid-or-has-expired) |
 | Mail never arrives | Silent by design for unknown or rate-limited addresses; otherwise SMTP errors in the log | [Details](#mail-never-arrives) |
-| `curl` to Jellyfin gets a 403 page instead of timing out | Expected in v0.2 | [Details](#curl-gets-a-403-instead-of-a-timeout) |
+| `curl` to the protected site gets a 403 page instead of timing out | Expected in v0.2 | [Details](#curl-gets-a-403-instead-of-a-timeout) |
 | Container exits immediately | Config validation failed, `TYC_IPSET_NAME` still set, or the state file is unreadable | Read the `config:` or `allowlist:` line; see [Configuration](configuration.md#validation) |
 
 ## Everyone gets the locked page
@@ -49,21 +49,21 @@ once it is fixed.
 Test from a network that has not verified:
 
 ```sh
-curl -s -o /dev/null -w '%{http_code}\n' https://jellyfin.example.com
+curl -s -o /dev/null -w '%{http_code}\n' https://app.example.com
 ```
 
-If that prints Jellyfin's status (`200`, `302`) instead of `403`, Caddy is not
+If that prints your backend's status (`200`, `302`) instead of `403`, Caddy is not
 asking the app.
 
 | Cause | Fix |
 |-------|-----|
-| The `jellyfin.example.com` site has no `forward_auth` block | Add it back exactly as in [Caddy and WireGuard](caddy-and-wireguard.md#caddyfile). |
+| The `app.example.com` site has no `forward_auth` block | Add it back exactly as in [Caddy and WireGuard](caddy-and-wireguard.md#caddyfile). |
 | `forward_auth` has no `uri /check`, or a different path | Caddy then asks the app for the original path, which is not an auth answer. Use `uri /check`. |
 | Caddy is still running the old config | `sudo docker compose exec -w /etc/caddy caddy caddy reload`, or `sudo docker compose restart caddy`. |
 | An old host Caddy, or another proxy, is answering instead | `sudo ss -ltnp 'sport = :443'` should show only `docker-proxy`. Stop the other one. |
-| Jellyfin is also reachable some other way (a published port, a second hostname, a port forward at home) | Remove it. Jellyfin should only be reachable through the tunnel from the VPS. |
+| The backend is also reachable some other way (a published port, a second hostname, a port forward at home) | Remove it. The backend should only be reachable through Caddy, for example through the tunnel from the VPS. |
 
-## Jellyfin still locked after verifying
+## Still locked after verifying
 
 | Cause | Fix |
 |-------|-----|
@@ -72,13 +72,13 @@ asking the app.
 | Entry expired (`TYC_WHITELIST_TTL`, 72 hours by default) | Verify again. Re-verifying resets the timer. |
 | The same person verified from another network since, which moves their unlock (the log shows `unlocked <new> for <email>, replacing <old>`) | Verify again from home. A household that needs two networks unlocked at once needs two trusted addresses. |
 | The state file was deleted, the volume recreated, or the file was found corrupt and moved to `allowlist.json.corrupt` | Verify again. Check with `sudo docker compose exec takeyourcoat cat /data/allowlist.json`. |
-| The check passes but Jellyfin does not answer (a `502` from Caddy) | The tunnel or Jellyfin is down. On the VPS: `sudo wg show` should show a recent handshake, and `sudo docker compose exec caddy wget -qO- http://10.0.0.2:8096/health` should answer. |
+| The check passes but the backend does not answer (a `502` from Caddy) | The tunnel or your backend is down. On the VPS: `sudo wg show` should show a recent handshake, and `sudo docker compose exec caddy wget -qO- http://10.0.0.2:8080/` should get an answer from your backend (an HTTP error status still proves it is reachable). |
 
 ## IPv6 or private address message
 
 The full message is: "This portal only works with public IPv4 addresses. Your
 connection arrived over IPv6 or from a private network, which is not
-supported." On Jellyfin it appears on the locked page (`403` from `/check`);
+supported." On the protected site it appears on the locked page (`403` from `/check`);
 on the portal it appears on the link page.
 
 | Cause | Fix |
@@ -175,7 +175,7 @@ show a certificate warning.
 | Cause | Fix |
 |-------|-----|
 | TCP 80 or 443 closed in the cloud firewall or host firewall | Open both (and UDP 443). See [VPS setup](vps-setup.md#2-open-the-ports). |
-| A DNS A record is missing or points elsewhere | `dig +short A hello.example.com` and `dig +short A jellyfin.example.com` must print the VPS address. |
+| A DNS A record is missing or points elsewhere | `dig +short A hello.example.com` and `dig +short A app.example.com` must print the VPS address. |
 | Something else already listens on 80 or 443 (often the old host Caddy) | `sudo ss -ltnp 'sport = :80'`; stop it, then `sudo docker compose up -d`. |
 | Too many attempts: Let's Encrypt rate limit | Wait, and keep the `caddy-data` volume so certificates are not re-requested on every recreate. |
 

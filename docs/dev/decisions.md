@@ -206,3 +206,32 @@ trusted.
   ([security model](../user/security-model.md#accepted-limits)).
 - Unlocks now survive restarts through the state file, but upgrading from
   v0.1 loses the old ipset entries; users verify once more.
+
+## 13. Positioned as a minimal Knocknoc replacement; no service naming at all
+
+**Context.** The app began as a gate for one Jellyfin server, but nothing in it
+is specific to a backend: `/check` answers for whatever site Caddy gates with
+`forward_auth`. What it does is what Knocknoc does (hide services until a user
+proves who they are, then grant just-in-time access to that user's IP), at
+household scale: a magic link to a trusted email address instead of SSO,
+Caddy's `forward_auth` instead of firewall and security-group orchestration,
+and a JSON file with a TTL as the allowlist. A setting that put a backend's name
+on the pages and in the email subject was tried and dropped.
+
+**Decision.** The project is described everywhere as a minimal, self-hosted
+Knocknoc replacement. The copy never names a backend: the index says
+"Temporary access for the network you are on." and "Enter your email address
+to get a link that unlocks this network.", the confirm page "Confirm to unlock
+every device on this network.", the success page "Done. <ip> is unlocked for
+the next N hours.", and the email subject is always "Your access link". The
+docs and packaging use the placeholders `app.example.com` and `10.0.0.2:8080`
+for the protected site and its backend.
+
+**Rejected.** *An optional name setting for the pages and the subject.* It
+added a config knob, header-injection handling for an operator-supplied string
+in the subject, and wording that only fits one backend per portal, for text
+that reads just as well without a name.
+
+**Consequences.** The copy never names a backend, there is no setting for it,
+and there is one less config knob. Entries above keep their original Jellyfin
+wording because they record why each decision was made.

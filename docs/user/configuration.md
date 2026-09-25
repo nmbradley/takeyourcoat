@@ -25,7 +25,7 @@ Defaults are the values in `loadConfig` in `config.go`.
 | `TYC_SMTP_PORT` | `smtp.port` | `587` | SMTP port. Must offer STARTTLS. |
 | `TYC_SMTP_USERNAME` | `smtp.username` | required | SMTP login. |
 | `TYC_SMTP_PASSWORD` | `smtp.password` | required | SMTP password or app password. Never logged. |
-| `TYC_SMTP_FROM` | `smtp.from` | required | From address, for example `Jellyfin Access <hello@example.com>`. |
+| `TYC_SMTP_FROM` | `smtp.from` | required | From address, for example `Access Portal <hello@example.com>`. |
 | `TYC_CONFIG` | none | unset | Path to an optional JSON file, read before the environment. |
 
 `TYC_IPSET_NAME` (v0.1) is gone. If it is set in the environment at all, even
@@ -154,7 +154,7 @@ keys in the file are ignored.
     "port": 587,
     "username": "resend",
     "password": "api-key",
-    "from": "Jellyfin Access <hello@example.com>"
+    "from": "Access Portal <hello@example.com>"
   }
 }
 ```
@@ -243,7 +243,7 @@ logged.
 ```yaml
       TYC_SMTP_HOST: smtp.fastmail.com
       TYC_SMTP_USERNAME: you@example.com
-      TYC_SMTP_FROM: Jellyfin Access <you@example.com>
+      TYC_SMTP_FROM: Access Portal <you@example.com>
 ```
 
 Password: an app password from Settings > Privacy & Security > App passwords.
@@ -253,7 +253,7 @@ Password: an app password from Settings > Privacy & Security > App passwords.
 ```yaml
       TYC_SMTP_HOST: smtp.gmail.com
       TYC_SMTP_USERNAME: you@example.com
-      TYC_SMTP_FROM: Jellyfin Access <you@example.com>
+      TYC_SMTP_FROM: Access Portal <you@example.com>
 ```
 
 Password: an app password (requires 2-Step Verification on the Google
@@ -264,7 +264,7 @@ account). The normal account password will not work.
 ```yaml
       TYC_SMTP_HOST: email-smtp.eu-west-1.amazonaws.com
       TYC_SMTP_USERNAME: <SES SMTP username>
-      TYC_SMTP_FROM: Jellyfin Access <you@example.com>
+      TYC_SMTP_FROM: Access Portal <you@example.com>
 ```
 
 Use your region's endpoint. Username and password are SES SMTP credentials,
@@ -276,7 +276,7 @@ account is in the SES sandbox, recipients must be verified too.
 ```yaml
       TYC_SMTP_HOST: smtp.resend.com
       TYC_SMTP_USERNAME: resend
-      TYC_SMTP_FROM: Jellyfin Access <hello@example.com>
+      TYC_SMTP_FROM: Access Portal <hello@example.com>
 ```
 
 The username is the literal word `resend`. The password is an API key; create

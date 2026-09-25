@@ -1,15 +1,36 @@
 # takeyourcoat
 
-A tiny captive portal for Jellyfin. A trusted person opens the portal from
-their home network, enters their email, and clicks a magic link; the portal
-unlocks that household's public IPv4 address for a few days, so every device
-on the network (TV, tablet, phone) can reach Jellyfin at once. It is
-**exposure reduction, not authentication**: it hides Jellyfin from the
-internet at large, and Jellyfin's own accounts remain the real access control.
-Both hostnames, the portal and Jellyfin, are served by Caddy on port 443. On
-every Jellyfin request Caddy asks the app, through `forward_auth`, whether the
-client's address is unlocked. Go standard library only, one static binary, no
-database.
+takeyourcoat is a minimal, self-hosted replacement for
+[Knocknoc](https://knocknoc.io): just-in-time network access without a VPN or a
+client. A person proves control of a trusted email address, and the public IPv4
+address they are on is unlocked for a limited time. Caddy asks takeyourcoat on
+every request whether the client is unlocked, so whatever Caddy fronts is
+invisible to everyone else. One Go binary, no dependencies, one container, one
+JSON file.
+
+A trusted person opens the portal from their home network, enters their email
+and clicks a magic link; every device on that network (TV, console, tablet,
+phone) can then reach the protected site for a few days. It is **exposure
+reduction, not authentication**: it hides your backend from the internet at
+large, and the backend's own login remains the real access control. Both
+hostnames, the portal and the protected site, are served by Caddy on port 443.
+
+## Compared with Knocknoc
+
+Knocknoc is a commercial product ("Remove Attack Surface & Network Exposure")
+that keeps services hidden until a user authenticates through an identity
+provider, then orchestrates firewalls, security groups and WAFs to grant
+just-in-time access to that user's IP. takeyourcoat does the same job at
+household scale:
+
+- **Identity**: a magic link sent to a trusted email address, instead of SSO
+  and MFA through an identity provider.
+- **Enforcement**: Caddy's `forward_auth` in front of one host, instead of
+  orchestrating firewalls, security groups and WAFs.
+- **Scale**: a household or a small team, not an organisation.
+- **Scope**: no dashboard, no audit UI, no integrations. The allowlist is a
+  JSON file with a TTL.
+- **Cost**: free, MIT licensed, about 800 lines of Go.
 
 ## How it works
 
@@ -18,13 +39,13 @@ database.
    network (`GET /verify`) and presses Unlock (`POST /verify`). The app adds
    their public IPv4 address to its allowlist, stored in a JSON file on a
    volume, for `TYC_WHITELIST_TTL` (72 hours by default).
-3. For every request to `jellyfin.example.com`, Caddy's `forward_auth` first
+3. For every request to `app.example.com`, Caddy's `forward_auth` first
    sends `GET /check` to the app with the client address in
    `X-Forwarded-For`.
 4. Unlocked address: the app answers `200` and Caddy proxies the request to
-   Jellyfin over WireGuard. Anything else: the app answers `403` with a short
-   "this network is not unlocked" page, and Caddy returns that page to the
-   client. Jellyfin never sees the request.
+   the backend, for example over WireGuard. Anything else: the app answers
+   `403` with a short "this network is not unlocked" page, and Caddy returns
+   that page to the client. The backend never sees the request.
 
 ## Host prerequisites
 
@@ -97,10 +118,10 @@ On the VPS, put [`docker-compose.yml`](docker-compose.yml) and
 [`Caddyfile`](Caddyfile) in one directory and edit them:
 
 - In `docker-compose.yml`: your portal URL, trusted emails and SMTP settings.
-- In `Caddyfile`: replace `hello.example.com` and `jellyfin.example.com` with
+- In `Caddyfile`: replace `hello.example.com` and `app.example.com` with
   your two hostnames (both need DNS A records pointing at the VPS), and
-  `10.0.0.2:8096` with the address Caddy uses to reach Jellyfin, normally the
-  home peer's WireGuard address.
+  `10.0.0.2:8080` with the address and port your backend listens on, as Caddy
+  reaches it (for a home server, normally the home peer's WireGuard address).
 
 Then:
 
@@ -111,8 +132,8 @@ $EDITOR .env          # set TYC_SMTP_PASSWORD
 docker compose up -d
 ```
 
-Caddy obtains certificates for both hostnames on first start. Jellyfin
-clients use `https://jellyfin.example.com` with no port.
+Caddy obtains certificates for both hostnames on first start. Clients of the
+protected site use `https://app.example.com` with no port.
 
 ## Upgrading from v0.1
 
@@ -123,10 +144,10 @@ clients use `https://jellyfin.example.com` with no port.
 - Stop the host Caddy (`systemctl disable --now caddy`); Caddy moves from the
   host network into the compose network.
 - Delete the iptables and ip6tables rules for port 8920, then the set
-  (`ipset destroy jellyfin_clients`), and save your rules so they do not come
+  (`ipset destroy <set name>`, the name you had in `TYC_IPSET_NAME`), and save your rules so they do not come
   back at boot.
-- Jellyfin no longer needs its own port. Change client addresses from
-  `https://jellyfin.example.com:8920` to `https://jellyfin.example.com`, and
+- The protected site no longer needs its own port. Change client addresses from
+  `https://app.example.com:8920` to `https://app.example.com`, and
   close 8920 in the cloud firewall.
 - Existing unlocks are lost; each household verifies once more.
 
@@ -149,24 +170,24 @@ Step by step: [Deployment](docs/user/deployment.md#migrating-from-v01).
   review it, and replace `image:` with `build: .` in the compose file.
 - **Protect the accounts** that can publish or receive links: enable 2FA on
   GitHub and on every trusted email account. Anyone who can read a trusted
-  inbox can unlock Jellyfin for their own network.
+  inbox can unlock the protected site for their own network.
 - **The trade-off.** v0.1 dropped unverified packets in the kernel, so
-  Jellyfin's port looked closed. Now TLS is completed by Caddy and requests are
+  the backend's port looked closed. Now TLS is completed by Caddy and requests are
   rejected in userspace with a 403. Scanners can see that the hostname exists
   and serves a locked page, and a Caddy or app bug could let requests through
   where a kernel rule would not. In exchange there is no privileged container,
-  no host firewall to get wrong, and Jellyfin shares port 443.
+  no host firewall to get wrong, and the protected site shares port 443.
 - Keep your real `docker-compose.yml`, `Caddyfile`, `.env` and any
   `config.json` on the VPS only.
 
-## Jellyfin known proxies
+## Trusted proxies on your backend
 
-Jellyfin sees every viewer arriving from one address: the Caddy container as
-it appears through the tunnel. Its brute-force lockout would then treat all
-users as one client. In Jellyfin, go to Dashboard, Networking, and add the
-address Jellyfin sees connections from (check its logs; usually the VPS
-tunnel address) to "Known proxies", so it reads the real client from
-`X-Forwarded-For`.
+Your backend sees every user arriving from one address: the Caddy
+container as it appears to the backend (through a tunnel, usually the VPS
+tunnel address). If your backend has brute-force protection or logs client
+IPs, tell it to trust the proxy address it sees connections from, so it reads
+the real client from `X-Forwarded-For`. Most web servers and applications have a trusted-proxies
+setting for this.
 
 ## Using it
 
@@ -178,8 +199,8 @@ Send this to the people on your trusted list:
 3. Open the link in the email **on the same phone, still on home Wi-Fi**,
    within 15 minutes.
 4. Check the address shown and tap **Unlock**.
-5. Every device on that Wi-Fi can now reach Jellyfin for 3 days. Repeat to
-   reset the timer, or if your home IP changes. If Jellyfin shows "This
+5. Every device on that Wi-Fi can now reach the protected site for 3 days. Repeat
+   to reset the timer, or if your home IP changes. If the site shows "This
    network is not unlocked", do this again.
 
 Each email unlocks one network at a time: verifying somewhere else moves the

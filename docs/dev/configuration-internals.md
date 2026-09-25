@@ -54,7 +54,7 @@ TYC_IPSET_NAME guard  ->  defaults  ->  JSON file (if TYC_CONFIG != "")  ->  app
    an empty string, return at once with
    `TYC_IPSET_NAME: no longer used; v0.2 gates via Caddy forward_auth, see README`
    and a nil config. This catches v0.1 compose files that would otherwise
-   start with a silently ignored setting and no idea why Jellyfin moved. The
+   start with a silently ignored setting and no idea why the protected site moved. The
    JSON key `ipset_name` has no field any more, so a file containing it is
    accepted and the key ignored like any unknown key.
    `TestLoadConfigIpsetNameRejected` checks the exact message.

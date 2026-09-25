@@ -32,7 +32,7 @@ func setRequiredEnv(t *testing.T) {
 	t.Setenv("TYC_SMTP_HOST", "smtp.example.com")
 	t.Setenv("TYC_SMTP_USERNAME", "user")
 	t.Setenv("TYC_SMTP_PASSWORD", "secret")
-	t.Setenv("TYC_SMTP_FROM", "Jellyfin Access <you@example.com>")
+	t.Setenv("TYC_SMTP_FROM", "Access Portal <you@example.com>")
 }
 
 func writeConfig(t *testing.T, body string) {

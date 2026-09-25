@@ -132,7 +132,7 @@ behind one mutex and mirrors it to `TYC_STATE_FILE` (default
 ## `/check` semantics
 
 `handlers.go:handleCheck` is the only thing standing between the internet and
-Jellyfin, so it fails closed:
+the protected site, so it fails closed:
 
 | Input | Response |
 |-------|----------|
@@ -256,7 +256,7 @@ goroutines indefinitely.
   built once in `newServer`); forms may only post back to the serving origin; no other site may frame
   the pages (clickjacking of the Unlock button); no `<base>` rewriting.
 - `Strict-Transport-Security: max-age=31536000`: browsers stay on HTTPS for a
-  year. Sent on every response, including the locked page on the Jellyfin
+  year. Sent on every response, including the locked page on the protected
   hostname.
 - `X-Content-Type-Options: nosniff`
 - `Referrer-Policy: no-referrer`: the confirm page's URL contains the token, so
@@ -265,7 +265,7 @@ goroutines indefinitely.
   Only `GET /static/` overrides it, with a one-year immutable cache.
 
 The portal origin is in `style-src` because the locked page is served on the
-gated Jellyfin hostname and loads its stylesheets from the portal by absolute
+gated hostname of the protected site and loads its stylesheets from the portal by absolute
 URL (`{{.Static}}/static/...`); a same-origin link there would be refused by
 `forward_auth`.
 

@@ -10,12 +10,12 @@ tells them apart by name, which a port-based firewall rule never could.
 | Hostname and port | Served by | Proxies to | Gated |
 |-------------------|-----------|------------|-------|
 | `hello.example.com:443` | Caddy | app at `takeyourcoat:8080` | No, open to everyone |
-| `jellyfin.example.com:443` | Caddy | Jellyfin at `10.0.0.2:8096` over WireGuard | Yes, by `forward_auth` to the app's `/check` |
+| `app.example.com:443` | Caddy | your backend at `10.0.0.2:8080`, for example over WireGuard | Yes, by `forward_auth` to the app's `/check` |
 | `:80` | Caddy | HTTP to HTTPS redirect, ACME challenges | No |
 | `takeyourcoat:8080` | takeyourcoat | none | Only on the compose network; no published port |
 
-Jellyfin clients (Apple TV, Swiftfin, Infuse, the web UI) use
-`https://jellyfin.example.com` as the server address, with no port.
+Clients of the protected site (a browser, a TV or phone app) use
+`https://app.example.com` as the server address, with no port.
 
 ## Caddyfile
 
@@ -28,18 +28,18 @@ hello.example.com {
 	reverse_proxy takeyourcoat:8080
 }
 
-# Jellyfin: each request is first checked with the app; only unlocked IPs reach the backend.
-jellyfin.example.com {
+# Protected site: each request is first checked with the app; only unlocked IPs reach the backend.
+app.example.com {
 	forward_auth takeyourcoat:8080 {
 		uri /check
 	}
-	reverse_proxy 10.0.0.2:8096
+	reverse_proxy 10.0.0.2:8080
 }
 ```
 
-Edit three things: the two hostnames, and `10.0.0.2:8096`, which is the
-address Caddy uses to reach Jellyfin (your home peer's WireGuard address and
-Jellyfin's port). Leave `takeyourcoat:8080` alone; it is the app's service
+Edit three things: the two hostnames, and `10.0.0.2:8080`, which is the
+address and port your backend listens on, as Caddy reaches it (for a home
+server, your home peer's WireGuard address and the backend's port). Leave `takeyourcoat:8080` alone; it is the app's service
 name on the compose network. After editing, reload:
 
 ```sh
@@ -52,14 +52,14 @@ sees the old copy; `sudo docker compose restart caddy` picks up the new one.
 
 How the gate works:
 
-- For every request to `jellyfin.example.com`, `forward_auth` first sends
+- For every request to `app.example.com`, `forward_auth` first sends
   `GET /check` to the app, with the real client address in `X-Forwarded-For`.
-- `200` from the app: Caddy continues to `reverse_proxy` and Jellyfin gets the
-  request. Anything else: Caddy returns the app's response (a `403` and the
-  "This network is not unlocked" page) to the client, and Jellyfin sees
+- `200` from the app: Caddy continues to `reverse_proxy` and the backend gets
+  the request. Anything else: Caddy returns the app's response (a `403` and
+  the "This network is not unlocked" page) to the client, and the backend sees
   nothing.
 - The check is a map lookup in memory, so running it on every request,
-  including video segments, costs next to nothing.
+  including every asset and media segment, costs next to nothing.
 
 Why the client address is right:
 
@@ -76,7 +76,7 @@ Why the client address is right:
 - Caddy obtains certificates for both names over ports 80 and 443, so both DNS
   names must point at the VPS and both ports must be open.
 
-Keep the `forward_auth` block. Without it Jellyfin is open to everyone; see
+Keep the `forward_auth` block. Without it the protected site is open to everyone; see
 [VPS setup](vps-setup.md#3-two-ways-it-can-go-wrong).
 
 Avoid `log` blocks on the portal site, or keep them short-lived: the magic
@@ -146,30 +146,28 @@ the host's tunnel address. Nothing extra is needed on the VPS for that.
 
 ### Home firewall
 
-The home server should accept Jellyfin traffic on the tunnel only from the
+The home server should accept the backend's traffic on the tunnel only from the
 VPS tunnel address, and nothing else from the tunnel:
 
 ```sh
-sudo iptables -A INPUT -i wg0 -s 10.0.0.1 -p tcp --dport 8096 -j ACCEPT
+sudo iptables -A INPUT -i wg0 -s 10.0.0.1 -p tcp --dport 8080 -j ACCEPT
 sudo iptables -A INPUT -i wg0 -j DROP
 sudo netfilter-persistent save
 ```
 
 If the VPS is ever compromised, this limits what it can reach at home to the
-Jellyfin port.
+backend's port.
 
-## Jellyfin "Known proxies"
+## Trusted proxies on your backend
 
-Through the tunnel every viewer reaches Jellyfin from one address: the Caddy
+Through the tunnel every user reaches the backend from one address: the Caddy
 container's traffic as it arrives over WireGuard, normally the VPS tunnel
-address `10.0.0.1`. Without further setup Jellyfin sees one client for
-everybody, so its failed-login lockout and its logs cannot tell viewers apart.
+address `10.0.0.1`. Without further setup the backend sees one client for
+everybody.
 
-Find the address Jellyfin sees connections from: check its logs (Dashboard >
-Logs) after loading a page through `https://jellyfin.example.com`. In
-Jellyfin, go to **Dashboard > Networking**, add that address to **Known
-proxies**, save, and restart Jellyfin. Jellyfin then takes the client address
-from the `X-Forwarded-For` header that Caddy sends.
+If your backend has brute-force protection or logs client IPs, tell it to
+trust the proxy address it sees connections from, so it reads the real client
+from `X-Forwarded-For`. Most web servers and applications have a trusted-proxies setting for this.
 
 Only list that one address. Listing anything broader lets other hosts forge
-their client address to Jellyfin.
+their client address to your backend.

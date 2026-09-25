@@ -52,7 +52,7 @@ Details: [Configuration internals](configuration-internals.md).
 | `templateFS` | `embed.FS` holding `templates/`: `layout.html` plus one file per page. |
 | `pages` | Map of six parsed `html/template` sets, one per page: `index`, `sent`, `confirm`, `success`, `error`, `locked`. Each set is `layout.html` parsed together with that page's `{{define "body"}}` file via `template.ParseFS`, so executing it renders the full layout. Built once at init with `template.Must`. |
 | `badIPMessage` | Text shown when the client is not a public IPv4 address. |
-| `server` | Holds `cfg`, `allow *allowlist`, `tokens *tokenStore`, `limiter *limiter` (per email and client IP), `capper *limiter` (per email across all IPs), `trusted map[string]bool`, `send func(to, link string) error`. |
+| `server` | Holds `cfg`, `allow *allowlist`, `tokens *tokenStore`, `limiter *limiter` (per email and client IP), `capper *limiter` (per email across all IPs), `trusted map[string]bool`, `send func(to, link string) error`, `static` and `csp`. |
 | `newServer(cfg, allow, send) *server` | Builds the trusted-email set, a token store with `TokenTTL`, a limiter of `RequestsPerEmailPerHour` per hour and a capper of `4 * RequestsPerEmailPerHour` per hour; keeps the allowlist it is given; sets `static` (`PublicURL` without trailing slash) and `csp` (with the portal origin in `style-src`). |
 | `(*server).securityHeaders(next) http.Handler` | Middleware setting CSP (`s.csp`), HSTS, `nosniff`, `no-referrer`, `no-store` on every response. |
 | `(*server).render(w, status, page, data)` | Executes a template with `{Static: s.static, Data: data}` into a buffer, then writes `Content-Type`, status and body. On template error: logs and returns 500. |
@@ -83,8 +83,8 @@ Details: [Configuration internals](configuration-internals.md).
 | Name | Purpose |
 |------|---------|
 | `messageID(fromAddr) string` | `<32 random hex chars@domain of fromAddr>`, for the `Message-ID` header. |
-| `composeMessage(from, to, link, msgID, date) []byte` | Plain-text RFC 5322 message with CRLF line endings, subject "Your Jellyfin access link", and a `Message-ID`. |
-| `sendMagicLink(cfg, to, link) error` | Dial (10 s), 30 s deadline, `STARTTLS` with `ServerName: cfg.Host`, `PLAIN` auth, `MAIL`/`RCPT`/`DATA`, `QUIT`. |
+| `composeMessage(from, to, link, msgID, date) []byte` | Plain-text RFC 5322 message with CRLF line endings, the fixed subject "Your access link", and a `Message-ID`. |
+| `sendMagicLink(cfg SMTPConfig, to, link) error` | Dial (10 s), 30 s deadline, `STARTTLS` with `ServerName: cfg.Host`, `PLAIN` auth, `MAIL`/`RCPT`/`DATA`, `QUIT`. |
 
 ### `allow.go`
 
@@ -166,9 +166,9 @@ The address used is the one seen on the POST, not the one shown on the GET.
 
 ### `GET /check`
 
-Called by Caddy's `forward_auth` before every request to the Jellyfin
+Called by Caddy's `forward_auth` before every request to the protected
 hostname. Caddy sends a `GET` to `uri /check` with `X-Forwarded-For` set to
-the client address; on a 2xx it proxies the original request to Jellyfin, on
+the client address; on a 2xx it proxies the original request to the backend, on
 anything else it returns this response to the client unchanged.
 
 1. `clientIP`, exactly as for the other routes. Not public IPv4 (IPv6,
@@ -180,14 +180,14 @@ anything else it returns this response to the client unchanged.
    `cfg.PublicURL`.
 
 Nothing is logged. The handler does a mutex and a map lookup, so running on
-every Jellyfin request (including media segments) is cheap. The response says
+every request to the protected site (including every asset) is cheap. The response says
 only whether the caller's own address is allowed. It goes through
 `securityHeaders` like every route, so the 403 page carries the same CSP.
 
 ### Sequence
 
 ```
-Browser/TV            Caddy                 server             tokenStore   mail         allowlist   Jellyfin
+Browser/TV            Caddy                 server             tokenStore   mail         allowlist   backend
    |                    |                      |                    |          |              |          |
    |-- POST /request -->|-- XFF: client ------>|                    |          |              |          |
    |                    |                      |-- issue(email) --->|          |              |          |
@@ -203,16 +203,16 @@ Browser/TV            Caddy                 server             tokenStore   mail
    |                    |                      |-- consume(token) ->|          |              |          |
    |<-- 200 "success" --|<---------------------|                    |          |              |          |
    |                    |                      |                    |          |              |          |
-   |-- GET jellyfin --->|                      |                    |          |              |          |
+   |-- GET app -------->|                      |                    |          |              |          |
    |                    |-- GET /check ------->|                    |          |              |          |
    |                    |   XFF: client        |-- allowed(ip) ------------------------------>|          |
    |                    |<-- 200 ok / 403 -----|                    |          |              |          |
    |                    |-- on 200: reverse_proxy over WireGuard -------------------------------------->|
-   |<-- Jellyfin or 403 |                      |                    |          |              |          |
+   |<-- backend or 403 |                      |                    |          |              |          |
 ```
 
 The first three exchanges are on `hello.example.com`; the last is on
-`jellyfin.example.com`.
+`app.example.com`.
 
 ## Security-header middleware
 
@@ -235,11 +235,12 @@ be this strict.
 `layout.html` links the stylesheets by absolute URL,
 `{{.Static}}/static/pico.classless.min.css` and `{{.Static}}/static/site.css`,
 where `Static` is the portal URL. On the portal that is the same origin. On the
-gated Jellyfin hostname, where Caddy returns the `locked` page from `/check`,
+gated hostname of the protected site, where Caddy returns the `locked` page from `/check`,
 a relative `/static/...` link would itself go through `forward_auth` and be
 refused; the absolute link loads the CSS from the ungated portal instead, and
-the portal origin in `style-src` allows it. Page bodies read their own values
-from `.Data`.
+the portal origin in `style-src` allows it. Page copy never names a backend
+(the index says "Temporary access for the network you are on."). Page bodies
+read their own values from `.Data`.
 
 ## Embedded static file
 

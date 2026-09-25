@@ -1,9 +1,10 @@
 # takeyourcoat developer guide
 
-takeyourcoat is a single Go `package main` with no dependencies outside the
+takeyourcoat is a minimal, self-hosted replacement for
+[Knocknoc](https://knocknoc.io), written as a single Go `package main` with no dependencies outside the
 standard library. It serves a small web portal, sends a magic link over
 SMTP, and on confirmation adds the client's IPv4 address to an allowlist kept
-in a JSON file. Caddy gates Jellyfin by calling the app's `GET /check`
+in a JSON file. Caddy gates the protected site by calling the app's `GET /check`
 through `forward_auth`. Operators should read
 [the operator guide](../user/README.md) instead.
 
@@ -60,9 +61,9 @@ docker build -t takeyourcoat:dev .
 - **No `os/exec`.** The app starts no processes; keep it that way so the
   container can stay capability-free. See [Security design](security-design.md#no-shell-no-exec).
 - **Standard library only.** Adding a module dependency changes the security
-  posture of the process that decides who reaches Jellyfin; see
+  posture of the process that decides who reaches the protected site; see
   [Decisions](decisions.md).
 - **No secrets in logs.** Never log the `Config` struct or the SMTP password.
 - Placeholders only in code, tests and docs: `hello.example.com`,
-  `jellyfin.example.com`, `alice@example.com`, and `203.0.113.0/24` or
+  `app.example.com`, `alice@example.com`, and `203.0.113.0/24` or
   `198.51.100.0/24` for public test addresses.

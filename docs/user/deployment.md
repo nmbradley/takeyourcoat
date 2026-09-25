@@ -50,7 +50,7 @@ services:
       TYC_SMTP_HOST: smtp.resend.com
       TYC_SMTP_USERNAME: resend
       TYC_SMTP_PASSWORD: ${TYC_SMTP_PASSWORD}
-      TYC_SMTP_FROM: Jellyfin Access <hello@example.com>
+      TYC_SMTP_FROM: Access Portal <hello@example.com>
 
 networks:
   web:
@@ -76,7 +76,7 @@ volumes:
 | `networks: web: ipv4_address: 172.28.0.10` | Shares the `web` network with the app, so `takeyourcoat:8080` resolves, at a fixed address the app can trust exactly. |
 
 Caddy is part of the compose project because `forward_auth` makes it part of
-the design: it has to reach the app by name on every Jellyfin request.
+the design: it has to reach the app by name on every request to the protected site.
 
 ### `takeyourcoat`
 
@@ -160,9 +160,9 @@ unlock logs:
 ```
 
 Then prove the gate: from a network that has not verified,
-`curl -s -o /dev/null -w '%{http_code}\n' https://jellyfin.example.com` must
+`curl -s -o /dev/null -w '%{http_code}\n' https://app.example.com` must
 print `403`. Walk the flow from a phone on that network and it should print
-Jellyfin's own status. See
+your backend's own status. See
 [VPS setup](vps-setup.md#3-two-ways-it-can-go-wrong).
 
 ## Pinning the image
@@ -199,7 +199,7 @@ file pins `:0.2.0`.
   replace the digest and the version comment.
 
 - **No auto-updaters** (Watchtower and similar) against either container. Caddy
-  holds your TLS keys and decides who reaches Jellyfin; review each upgrade by
+  holds your TLS keys and decides who reaches the protected site; review each upgrade by
   hand.
 
 ## Building locally on the VPS
@@ -266,13 +266,13 @@ sudo docker compose logs -f takeyourcoat
 | `allowlist: <error>` | Refused to start: the state file could not be read, or a corrupt one could not be moved aside. See [Troubleshooting](troubleshooting.md#state-file-permission-denied). |
 | `config: <field>: <problem>` | Refused to start. See [Configuration](configuration.md#validation). |
 
-`/check` requests are not logged; Caddy makes one per Jellyfin request. The
+`/check` requests are not logged; Caddy makes one per request to the protected site. The
 SMTP password is never logged. Requests for unknown email addresses are not
 logged at all.
 
 ## Migrating from v0.1
 
-v0.1 gated Jellyfin with an ipset set and an iptables rule on port 8920, with
+v0.1 gated the protected site with an ipset set and an iptables rule on port 8920, with
 the app on host networking holding `NET_ADMIN` and Caddy on the host. v0.2
 drops all of that.
 
@@ -280,12 +280,13 @@ drops all of that.
 2. Stop the host Caddy so ports 80 and 443 are free:
    `sudo systemctl disable --now caddy`. Its Caddyfile is replaced by the one
    in the repository.
-3. Remove the host firewall pieces, rule first, then the set:
+3. Remove the host firewall pieces, rule first, then the set. `<set name>` is
+   the value you had in `TYC_IPSET_NAME`:
 
    ```sh
-   sudo iptables -D INPUT -p tcp --dport 8920 -m set ! --match-set jellyfin_clients src -j DROP
+   sudo iptables -D INPUT -p tcp --dport 8920 -m set ! --match-set <set name> src -j DROP
    sudo ip6tables -D INPUT -p tcp --dport 8920 -j DROP
-   sudo ipset destroy jellyfin_clients
+   sudo ipset destroy <set name>
    sudo netfilter-persistent save
    ```
 
@@ -296,15 +297,15 @@ drops all of that.
    new setting is required: `TYC_LISTEN`, `TYC_TRUSTED_PROXIES` and the
    `tyc-data` volume are already in the new file.
 5. Put the repository's `Caddyfile` next to it and edit the two hostnames and
-   the Jellyfin backend address (see
-   [Caddy and WireGuard](caddy-and-wireguard.md#caddyfile)). Jellyfin no longer
-   needs a port of its own: the site is `jellyfin.example.com`, not
-   `jellyfin.example.com:8920`.
+   the backend address (see
+   [Caddy and WireGuard](caddy-and-wireguard.md#caddyfile)). The protected
+   site no longer needs a port of its own: the site is `app.example.com`, not
+   `app.example.com:8920`.
 6. `sudo docker compose up -d`, then check both logs.
 7. In the cloud firewall, open UDP 443 and close TCP 8920.
-8. Change the server address in every Jellyfin client from
-   `https://jellyfin.example.com:8920` to `https://jellyfin.example.com`.
-9. Check Jellyfin's **Known proxies** still matches the address it sees
-   connections from ([Caddy and WireGuard](caddy-and-wireguard.md#jellyfin-known-proxies)).
+8. Change the server address in every client of the protected site from
+   `https://app.example.com:8920` to `https://app.example.com`.
+9. If your backend trusts a proxy address, check it still matches the address
+   it sees connections from ([Caddy and WireGuard](caddy-and-wireguard.md#trusted-proxies-on-your-backend)).
 10. Existing unlocks are lost, because they lived in the ipset. Tell your
     trusted people to verify once more.

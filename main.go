@@ -1,3 +1,9 @@
+// takeyourcoat is a minimal, self-hosted replacement for Knocknoc-style
+// just-in-time network access. A person proves control of a trusted email
+// address, and the public IPv4 address they are on is allowlisted for a
+// limited time. The reverse proxy asks this service on every request
+// whether the client is unlocked, so whatever it fronts stays hidden from
+// everyone else.
 package main
 
 import (

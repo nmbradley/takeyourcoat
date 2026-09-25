@@ -37,7 +37,7 @@ services:
       TYC_SMTP_HOST: smtp.resend.com
       TYC_SMTP_USERNAME: resend
       TYC_SMTP_PASSWORD: ${TYC_SMTP_PASSWORD}
-      TYC_SMTP_FROM: Jellyfin Access <hello@example.com>
+      TYC_SMTP_FROM: Access Portal <hello@example.com>
 
 networks:
   web:
