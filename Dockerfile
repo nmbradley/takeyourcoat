@@ -5,7 +5,7 @@ COPY . .
 RUN CGO_ENABLED=0 go build -trimpath -ldflags="-s -w" -o /takeyourcoat .
 
 # alpine:3.23
-FROM alpine:3.23@sha256:85fe1e81d6758c208f3e1eed4338a1997e19d4be002d4dd32d3100c9a8c010a0
+FROM alpine:3.24@sha256:294b683cb724975bec92580e1e685676bd4b50bda910ddb8c51d4cabeaec77e6
 LABEL org.opencontainers.image.source="https://github.com/nmbradley/takeyourcoat" \
       org.opencontainers.image.description="Minimal self-hosted Knocknoc replacement: email-verified, time-limited IP allowlisting for anything behind Caddy" \
       org.opencontainers.image.licenses="MIT"
