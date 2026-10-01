@@ -18,7 +18,7 @@ services:
 
   takeyourcoat:
     # Pin to a version tag or digest, never latest.
-    image: ghcr.io/nmbradley/takeyourcoat:0.2.0
+    image: ghcr.io/nmbradley/takeyourcoat:0.3.0
     # Or build from source on the VPS instead of pulling:
     # build: .
     restart: unless-stopped
